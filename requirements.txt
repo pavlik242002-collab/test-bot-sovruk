@@ -1,0 +1,4 @@
+python-dotenv
+huggingface-hub
+duckduckgo-search
+python-telegram-bot
