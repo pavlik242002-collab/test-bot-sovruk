@@ -2,7 +2,5 @@
 .env
 bot.log
 search_cache.json
-allowed_admins.json
-allowed_users.json
 __pycache__/
 *.pyc
