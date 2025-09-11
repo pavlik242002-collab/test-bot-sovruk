@@ -1,11 +1,13 @@
 import os
 import json
 import logging
+import random  # Добавлено для случайного выбора ответа
 import requests
 from dotenv import load_dotenv
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram import InputFile
+from transformers import pipeline
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,7 +23,6 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 YANDEX_TOKEN = os.getenv("YANDEX_TOKEN")
 
-# Проверка токенов
 if not TELEGRAM_TOKEN:
     logger.error("TELEGRAM_TOKEN не указан в .env")
     raise ValueError("TELEGRAM_TOKEN должен быть указан в .env")
@@ -39,7 +40,7 @@ def load_allowed_admins():
             return admins
     except FileNotFoundError:
         logger.warning("Файл allowed_admins.json не найден, используется стандартный ID")
-        return [123456789]  # Замените на ваш user_id
+        return [123456789]
 
 def save_allowed_admins(allowed_admins):
     try:
@@ -71,6 +72,20 @@ def save_allowed_users(allowed_users):
 
 ALLOWED_USERS = load_allowed_users()
 
+def load_qa_database():
+    try:
+        with open('qa_database.json', 'r', encoding='utf-8') as f:
+            qa = json.load(f)
+            logger.info(f"Загружена база Q&A: {len(qa)} записей")
+            return qa
+    except FileNotFoundError:
+        logger.warning("Файл qa_database.json не найден, создаётся пустой")
+        return {}
+
+QA_DATABASE = load_qa_database()
+
+generator = pipeline('text-generation', model='sberbank-ai/rugpt3small_based_on_gpt2')
+
 async def get_main_menu(user_id):
     keyboard = [
         ['Управление пользователями', 'Скачать файл'],
@@ -84,7 +99,7 @@ async def send_welcome(update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     logger.info(f"Команда /start от user_id={user_id}, chat_id={chat_id}")
 
-    context.user_data.clear()  # Очищаем состояние
+    context.user_data.clear()
     context.user_data["awaiting_name"] = True
 
     if user_id not in ALLOWED_USERS and user_id not in ALLOWED_ADMINS:
@@ -188,7 +203,7 @@ async def search_and_send_file(update, context, file_name):
         try:
             file_response = requests.get(download_url)
             if file_response.status_code == 200:
-                file_size = len(file_response.content) / (1024 * 1024)  # Размер в МБ
+                file_size = len(file_response.content) / (1024 * 1024)
                 if file_size > 20:
                     await update.message.reply_text("Файл слишком большой (>20 МБ).", reply_markup=reply_markup)
                     logger.error(f"Файл {file_name} слишком большой: {file_size} МБ")
@@ -393,12 +408,20 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
         await search_and_send_file(update, context, user_input)
         return
 
-    user_name = context.user_data.get("name", "Друг")
-    await update.message.reply_text(
-        f"{user_name}, используй кнопки для работы с файлами или управления пользователями.",
-        reply_markup=reply_markup
-    )
-    logger.info(f"Обработано текстовое сообщение от user_id={user_id}")
+    normalized_input = user_input.lower()
+    if normalized_input in QA_DATABASE:
+        answers = QA_DATABASE[normalized_input]
+        response = random.choice(answers) if isinstance(answers, list) else answers  # Случайный выбор или строка
+        await update.message.reply_text(response, reply_markup=reply_markup)
+        logger.info(f"Ответ из базы Q&A для {user_id}: {response}")
+    else:
+        try:
+            generated = generator(user_input, max_length=100, num_return_sequences=1)[0]['generated_text']
+            await update.message.reply_text(generated.strip(), reply_markup=reply_markup)
+            logger.info(f"Сгенерированный ответ нейронкой для {user_id}: {generated}")
+        except Exception as e:
+            await update.message.reply_text("Не удалось сгенерировать ответ.", reply_markup=reply_markup)
+            logger.error(f"Ошибка нейронки: {str(e)}")
 
 async def callback_handler(update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
