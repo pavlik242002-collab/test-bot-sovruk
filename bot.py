@@ -3,13 +3,11 @@ import json
 import logging
 import random
 import requests
-import time
-import torch
 from dotenv import load_dotenv
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram import InputFile
-from transformers import pipeline
+from huggingface_hub import InferenceClient
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
 
@@ -30,6 +28,7 @@ executor = ThreadPoolExecutor(max_workers=1)
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 YANDEX_TOKEN = os.getenv("YANDEX_TOKEN")
+HF_TOKEN = os.getenv("HF_TOKEN")
 
 if not TELEGRAM_TOKEN:
     logger.error("TELEGRAM_TOKEN не указан в .env")
@@ -37,8 +36,19 @@ if not TELEGRAM_TOKEN:
 if not YANDEX_TOKEN:
     logger.error("YANDEX_TOKEN не указан в .env")
     raise ValueError("YANDEX_TOKEN должен быть указан в .env")
+if not HF_TOKEN:
+    logger.error("HF_TOKEN не указан в .env")
+    raise ValueError("HF_TOKEN должен быть указан в .env")
 
 FIXED_FOLDER = '/documents/'
+
+# Инициализация клиента Hugging Face
+try:
+    client = InferenceClient(token=HF_TOKEN)
+    logger.info("Клиент Hugging Face успешно инициализирован")
+except Exception as e:
+    logger.error(f"Ошибка инициализации клиента Hugging Face: {str(e)}")
+    raise
 
 def load_allowed_admins():
     try:
@@ -88,31 +98,34 @@ def load_qa_database():
             return qa
     except FileNotFoundError:
         logger.warning("Файл qa_database.json не найден, создаётся пустой")
-        return {}
+        return {
+            "руководитель вскс": [
+                "Руководителем ВСКС является [Имя Фамилия]. ВСКС — Всероссийский студенческий корпус спасателей, основанный в 2001 году.",
+                "Текущий руководитель ВСКС — [Имя Фамилия], назначен в [год]."
+            ],
+            "сергей владимирович": "Уточните, о ком идёт речь. Если вы имеете в виду Сергея Владимировича в контексте ВСКС, то таких данных нет."
+        }
 
 QA_DATABASE = load_qa_database()
 
-# Загрузка модели с явным указанием устройства
-device = 0 if torch.cuda.is_available() else -1
-logger.info(f"Используемое устройство: {'GPU' if device == 0 else 'CPU'}")
-try:
-    generator = pipeline('text-generation', model='sberbank-ai/rugpt3small_based_on_gpt2', device=device)
-    logger.info("Модель успешно загружена")
-except Exception as e:
-    logger.error(f"Ошибка загрузки модели: {str(e)}")
-    raise
-
-# Асинхронная функция для генерации текста
+# Асинхронная функция для генерации текста через Hugging Face
 async def generate_text(input_text):
     loop = asyncio.get_event_loop()
     input_text = input_text[:100]  # Ограничение входного текста
-    start_time = time.time()
-    result = await loop.run_in_executor(executor, lambda: generator(
-        input_text, max_new_tokens=20, num_return_sequences=1, truncation=True, do_sample=False
-    )[0]['generated_text'])
-    elapsed_time = time.time() - start_time
-    logger.info(f"Генерация текста заняла {elapsed_time:.2f} секунд")
-    return result
+    try:
+        result = await loop.run_in_executor(executor, lambda: client.text_generation(
+            input_text,
+            model="distilgpt2",
+            max_new_tokens=50,
+            do_sample=True,
+            temperature=0.7,
+            top_p=0.9
+        ))
+        logger.info(f"Сгенерирован ответ через Hugging Face: {result}")
+        return result
+    except Exception as e:
+        logger.error(f"Ошибка генерации текста через Hugging Face: {str(e)}")
+        return "Не удалось сгенерировать ответ."
 
 async def get_main_menu(user_id):
     keyboard = [
@@ -436,20 +449,30 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
         await search_and_send_file(update, context, user_input)
         return
 
-    normalized_input = user_input.lower()
-    if normalized_input in QA_DATABASE:
-        answers = QA_DATABASE[normalized_input]
+    # Обработка запроса в QA_DATABASE
+    normalized_input = user_input.lower().strip()
+    matching_key = None
+    for key in QA_DATABASE:
+        if normalized_input in key.lower() or key.lower() in normalized_input:
+            matching_key = key
+            break
+
+    if matching_key:
+        answers = QA_DATABASE[matching_key]
         response = random.choice(answers) if isinstance(answers, list) else answers
         await update.message.reply_text(response, reply_markup=reply_markup)
-        logger.info(f"Ответ из базы Q&A для {user_id}: {response}")
+        logger.info(f"Ответ из базы Q&A для user_id={user_id}, запрос='{user_input}': {response}")
     else:
         try:
             generated = await generate_text(user_input)
             await update.message.reply_text(generated.strip(), reply_markup=reply_markup)
-            logger.info(f"Сгенерированный ответ нейронкой для {user_id}: {generated}")
+            logger.info(f"Ответ через Hugging Face для user_id={user_id}, запрос='{user_input}': {generated}")
         except Exception as e:
-            await update.message.reply_text("Не удалось сгенерировать ответ.", reply_markup=reply_markup)
-            logger.error(f"Ошибка нейронки: {str(e)}")
+            await update.message.reply_text(
+                "Извините, я не знаю ответа на этот вопрос. Попробуйте уточнить запрос или использовать кнопки меню.",
+                reply_markup=reply_markup
+            )
+            logger.error(f"Ошибка генерации ответа через Hugging Face для user_id={user_id}: {str(e)}")
 
 async def callback_handler(update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
