@@ -22,11 +22,10 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 HF_TOKEN = os.getenv("HF_TOKEN")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-YANDEX_TOKEN = os.getenv("YANDEX_TOKEN")  # Токен для Яндекс.Диска
+YANDEX_TOKEN = os.getenv("YANDEX_TOKEN")
 
-FIXED_FOLDER = '/documents/'  # Фиксированная папка для поиска файлов
+FIXED_FOLDER = '/documents/'
 
-# Загрузка списка администраторов из JSON-файла
 def load_allowed_admins():
     try:
         with open('allowed_admins.json', 'r') as f:
@@ -34,14 +33,12 @@ def load_allowed_admins():
     except FileNotFoundError:
         return [123456789]  # Замените на ваш user_id
 
-# Сохранение списка администраторов в JSON-файл
 def save_allowed_admins(allowed_admins):
     with open('allowed_admins.json', 'w') as f:
         json.dump(allowed_admins, f, ensure_ascii=False)
 
 ALLOWED_ADMINS = load_allowed_admins()
 
-# Загрузка списка разрешённых пользователей из JSON-файла
 def load_allowed_users():
     try:
         with open('allowed_users.json', 'r') as f:
@@ -49,7 +46,6 @@ def load_allowed_users():
     except FileNotFoundError:
         return []
 
-# Сохранение списка разрешённых пользователей в JSON-файл
 def save_allowed_users(allowed_users):
     with open('allowed_users.json', 'w') as f:
         json.dump(allowed_users, f, ensure_ascii=False)
@@ -65,7 +61,6 @@ system_prompt = """
 
 histories = {}
 
-# Функция для получения списка файлов в папке на Яндекс.Диске
 def list_yandex_disk_files(folder_path):
     url = f'https://cloud-api.yandex.net/v1/disk/resources?path={folder_path}&fields=items.name,items.type,items.path&limit=100'
     headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
@@ -81,7 +76,6 @@ def list_yandex_disk_files(folder_path):
         logger.error(f"Ошибка при запросе списка файлов: {str(e)}")
         return []
 
-# Функция для получения ссылки на файл с Яндекс.Диска
 def get_yandex_disk_file(file_path):
     url = f'https://cloud-api.yandex.net/v1/disk/resources/download?path={file_path}'
     headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
@@ -96,7 +90,6 @@ def get_yandex_disk_file(file_path):
         logger.error(f"Ошибка при запросе к Яндекс.Диску: {str(e)}")
         return None
 
-# Функция для загрузки файла на Яндекс.Диск
 def upload_to_yandex_disk(file_name, file_content):
     path = FIXED_FOLDER + file_name
     url = f'https://cloud-api.yandex.net/v1/disk/resources/upload?path={path}&overwrite=true'
@@ -146,7 +139,10 @@ async def send_welcome(update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
 
+    logger.info(f"send_welcome: user_id={user_id}, is_admin={user_id in ALLOWED_ADMINS}")
+
     context.user_data.pop('awaiting_user_id', None)
+    context.user_data.pop('awaiting_file', None)
     context.user_data["awaiting_name"] = True
 
     welcome_message = f"Ваш user_id: {user_id}\n"
@@ -161,13 +157,13 @@ async def send_welcome(update, context: ContextTypes.DEFAULT_TYPE):
         ['Управление пользователями', 'Скачать файл'],
         ['Загрузить файл']
     ] if user_id in ALLOWED_ADMINS else [['Скачать файл']]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
-    welcome_message += "Привет! Я чат-бот, который может анализировать нашу переписку, искать информацию в интернете и скачивать файлы с Яндекс.Диска. Как тебя зовут?"
+    welcome_message += "Привет! Я чат-бот, который может анализировать нашу переписку, искать информацию в интернете и работать с файлами на Яндекс.Диске. Как тебя зовут?"
     await update.message.reply_text(welcome_message, reply_markup=reply_markup)
     if chat_id not in histories:
         histories[chat_id] = {"name": None, "messages": [{"role": "system", "content": system_prompt}]}
-    logger.info(f"Пользователь {chat_id} начал чат с /start.")
+    logger.info(f"Пользователь {chat_id} начал чат с /start. Клавиатура: {keyboard}")
 
 async def get_file(update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -225,19 +221,26 @@ async def search_and_send_file(update, context, file_name):
 
 async def handle_document(update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    admin_keyboard = [
+        ['Управление пользователями', 'Скачать файл'],
+        ['Загрузить файл']
+    ] if user_id in ALLOWED_ADMINS else [['Скачать файл']]
+    default_reply_markup = ReplyKeyboardMarkup(admin_keyboard, resize_keyboard=True, one_time_keyboard=False)
+
     if user_id not in ALLOWED_ADMINS:
-        await update.message.reply_text("Извините, только администраторы могут загружать файлы.")
+        await update.message.reply_text("Извините, только администраторы могут загружать файлы.", reply_markup=default_reply_markup)
         logger.info(f"Пользователь {user_id} попытался загрузить файл, но не является администратором.")
         return
 
     if not context.user_data.get('awaiting_file', False):
-        await update.message.reply_text("Не ожидалось загрузки файла. Пожалуйста, используйте кнопку 'Загрузить файл'.")
+        await update.message.reply_text("Не ожидалось загрузки файла. Пожалуйста, используйте кнопку 'Загрузить файл'.", reply_markup=default_reply_markup)
         return
 
     document = update.message.document
     file_name = document.file_name
     if not (file_name.endswith('.pdf') or file_name.endswith('.doc') or file_name.endswith('.docx')):
-        await update.message.reply_text("Пожалуйста, загружайте файлы только в формате PDF или Word (.pdf, .doc, .docx).")
+        await update.message.reply_text("Пожалуйста, загружайте файлы только в формате PDF или Word (.pdf, .doc, .docx).", reply_markup=default_reply_markup)
         return
 
     try:
@@ -245,11 +248,11 @@ async def handle_document(update, context: ContextTypes.DEFAULT_TYPE):
         file_content = await file.download_as_bytearray()
         success = upload_to_yandex_disk(file_name, file_content)
         if success:
-            await update.message.reply_text(f"Файл '{file_name}' успешно загружен в папку {FIXED_FOLDER} на Яндекс.Диске.")
+            await update.message.reply_text(f"Файл '{file_name}' успешно загружен в папку {FIXED_FOLDER} на Яндекс.Диске.", reply_markup=default_reply_markup)
         else:
-            await update.message.reply_text("Ошибка при загрузке файла на Яндекс.Диск.")
+            await update.message.reply_text("Ошибка при загрузке файла на Яндекс.Диск.", reply_markup=default_reply_markup)
     except Exception as e:
-        await update.message.reply_text(f"Ошибка при обработке файла: {str(e)}")
+        await update.message.reply_text(f"Ошибка при обработке файла: {str(e)}", reply_markup=default_reply_markup)
         logger.error(f"Ошибка при обработке документа: {str(e)}")
 
     context.user_data.pop('awaiting_file', None)
@@ -269,7 +272,7 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
         ['Управление пользователями', 'Скачать файл'],
         ['Загрузить файл']
     ] if user_id in ALLOWED_ADMINS else [['Скачать файл']]
-    default_reply_markup = ReplyKeyboardMarkup(admin_keyboard, resize_keyboard=True)
+    default_reply_markup = ReplyKeyboardMarkup(admin_keyboard, resize_keyboard=True, one_time_keyboard=False)
 
     if user_input.lower().endswith(('.pdf', '.doc', '.docx')):
         await search_and_send_file(update, context, user_input)
@@ -278,15 +281,13 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("awaiting_name", False):
         histories[chat_id]["name"] = user_input
         context.user_data["awaiting_name"] = False
-        await update.message.reply_text(f"Рад знакомству, {user_input}! Задавай свои вопросы или просто напиши имя файла для скачивания (например, file.pdf).",
-                                        reply_markup=default_reply_markup)
+        await update.message.reply_text(f"Рад знакомству, {user_input}! Задавай свои вопросы или используй кнопки для работы с файлами.", reply_markup=default_reply_markup)
         logger.info(f"Имя пользователя {chat_id} сохранено: {user_input}")
         return
 
     if user_input == "Управление пользователями":
         if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text("Извините, только администраторы могут управлять пользователями.",
-                                            reply_markup=default_reply_markup)
+            await update.message.reply_text("Извините, только администраторы могут управлять пользователями.", reply_markup=default_reply_markup)
             logger.info(f"Пользователь {user_id} попытался использовать управление пользователями, но не является администратором.")
             return
         keyboard = [
@@ -294,26 +295,23 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
             ['Список пользователей', 'Список администраторов'],
             ['Назад']
         ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
         await update.message.reply_text("Выберите действие:", reply_markup=reply_markup)
         logger.info(f"Администратор {user_id} запросил управление пользователями.")
         return
 
     if user_input == "Скачать файл":
-        await update.message.reply_text("Укажите название файла (например, file.pdf). Я поищу его в папке /documents/.",
-                                        reply_markup=default_reply_markup)
+        await update.message.reply_text("Укажите название файла (например, file.pdf). Я поищу его в папке /documents/.", reply_markup=default_reply_markup)
         logger.info(f"Пользователь {user_id} запросил скачивание файла.")
         return
 
     if user_input == "Загрузить файл":
         if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text("Извините, только администраторы могут загружать файлы.",
-                                            reply_markup=default_reply_markup)
+            await update.message.reply_text("Извините, только администраторы могут загружать файлы.", reply_markup=default_reply_markup)
             logger.info(f"Пользователь {user_id} попытался загрузить файл, но не является администратором.")
             return
         context.user_data['awaiting_file'] = True
-        await update.message.reply_text("Пожалуйста, отправьте файл для загрузки (PDF, DOC или DOCX).",
-                                        reply_markup=default_reply_markup)
+        await update.message.reply_text("Пожалуйста, отправьте файл для загрузки (PDF, DOC или DOCX).", reply_markup=default_reply_markup)
         logger.info(f"Администратор {user_id} запросил загрузку файла.")
         return
 
@@ -327,23 +325,19 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
             new_id = int(user_input)
             if context.user_data['awaiting_user_id'] == 'add_user':
                 if new_id in ALLOWED_USERS:
-                    await update.message.reply_text(f"Пользователь с ID {new_id} уже имеет доступ.",
-                                                    reply_markup=default_reply_markup)
+                    await update.message.reply_text(f"Пользователь с ID {new_id} уже имеет доступ.", reply_markup=default_reply_markup)
                     return
                 ALLOWED_USERS.append(new_id)
                 save_allowed_users(ALLOWED_USERS)
-                await update.message.reply_text(f"Пользователь с ID {new_id} успешно добавлен!",
-                                                reply_markup=default_reply_markup)
+                await update.message.reply_text(f"Пользователь с ID {new_id} успешно добавлен!", reply_markup=default_reply_markup)
                 logger.info(f"Администратор {user_id} добавил пользователя {new_id} в список разрешённых.")
             elif context.user_data['awaiting_user_id'] == 'add_admin':
                 if new_id in ALLOWED_ADMINS:
-                    await update.message.reply_text(f"Пользователь с ID {new_id} уже является администратором.",
-                                                    reply_markup=default_reply_markup)
+                    await update.message.reply_text(f"Пользователь с ID {new_id} уже является администратором.", reply_markup=default_reply_markup)
                     return
                 ALLOWED_ADMINS.append(new_id)
                 save_allowed_admins(ALLOWED_ADMINS)
-                await update.message.reply_text(f"Пользователь с ID {new_id} успешно назначен администратором!",
-                                                reply_markup=default_reply_markup)
+                await update.message.reply_text(f"Пользователь с ID {new_id} успешно назначен администратором!", reply_markup=default_reply_markup)
                 logger.info(f"Администратор {user_id} назначил пользователя {new_id} администратором.")
             context.user_data.pop('awaiting_user_id', None)
             return
@@ -354,32 +348,27 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
 
     if user_input == "Добавить пользователя":
         if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text("Извините, только администраторы могут добавлять новых пользователей.",
-                                            reply_markup=default_reply_markup)
+            await update.message.reply_text("Извините, только администраторы могут добавлять новых пользователей.", reply_markup=default_reply_markup)
             logger.info(f"Пользователь {user_id} попытался добавить пользователя, но не является администратором.")
             return
-        await update.message.reply_text("Пожалуйста, укажите user_id для добавления.",
-                                        reply_markup=default_reply_markup)
+        await update.message.reply_text("Пожалуйста, укажите user_id для добавления.", reply_markup=default_reply_markup)
         context.user_data['awaiting_user_id'] = 'add_user'
         logger.info(f"Администратор {user_id} запросил добавление пользователя.")
         return
 
     if user_input == "Добавить администратора":
         if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text("Извините, только администраторы могут назначать новых администраторов.",
-                                            reply_markup=default_reply_markup)
+            await update.message.reply_text("Извините, только администраторы могут назначать новых администраторов.", reply_markup=default_reply_markup)
             logger.info(f"Пользователь {user_id} попытался добавить администратора, но не является администратором.")
             return
-        await update.message.reply_text("Пожалуйста, укажите user_id для назначения администратором.",
-                                        reply_markup=default_reply_markup)
+        await update.message.reply_text("Пожалуйста, укажите user_id для назначения администратором.", reply_markup=default_reply_markup)
         context.user_data['awaiting_user_id'] = 'add_admin'
         logger.info(f"Администратор {user_id} запросил добавление администратора.")
         return
 
     if user_input == "Список пользователей":
         if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text("Извините, только администраторы могут просматривать список пользователей.",
-                                            reply_markup=default_reply_markup)
+            await update.message.reply_text("Извините, только администраторы могут просматривать список пользователей.", reply_markup=default_reply_markup)
             logger.info(f"Пользователь {user_id} попытался просмотреть список пользователей, но не является администратором.")
             return
         if not ALLOWED_USERS:
@@ -392,8 +381,7 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
 
     if user_input == "Список администраторов":
         if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text("Извините, только администраторы могут просматривать список администраторов.",
-                                            reply_markup=default_reply_markup)
+            await update.message.reply_text("Извините, только администраторы могут просматривать список администраторов.", reply_markup=default_reply_markup)
             logger.info(f"Пользователь {user_id} попытался просмотреть список администраторов, но не является администратором.")
             return
         if not ALLOWED_ADMINS:
