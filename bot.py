@@ -1,14 +1,19 @@
 import os
 import json
 import logging
-import random  # Добавлено для случайного выбора ответа
+import random
 import requests
+import time
+import torch
 from dotenv import load_dotenv
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram import InputFile
 from transformers import pipeline
+from concurrent.futures import ThreadPoolExecutor
+import asyncio
 
+# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -18,6 +23,9 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Инициализация пула потоков для асинхронной генерации
+executor = ThreadPoolExecutor(max_workers=1)
 
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -84,7 +92,27 @@ def load_qa_database():
 
 QA_DATABASE = load_qa_database()
 
-generator = pipeline('text-generation', model='sberbank-ai/rugpt3small_based_on_gpt2')
+# Загрузка модели с явным указанием устройства
+device = 0 if torch.cuda.is_available() else -1
+logger.info(f"Используемое устройство: {'GPU' if device == 0 else 'CPU'}")
+try:
+    generator = pipeline('text-generation', model='sberbank-ai/rugpt3small_based_on_gpt2', device=device)
+    logger.info("Модель успешно загружена")
+except Exception as e:
+    logger.error(f"Ошибка загрузки модели: {str(e)}")
+    raise
+
+# Асинхронная функция для генерации текста
+async def generate_text(input_text):
+    loop = asyncio.get_event_loop()
+    input_text = input_text[:100]  # Ограничение входного текста
+    start_time = time.time()
+    result = await loop.run_in_executor(executor, lambda: generator(
+        input_text, max_new_tokens=20, num_return_sequences=1, truncation=True, do_sample=False
+    )[0]['generated_text'])
+    elapsed_time = time.time() - start_time
+    logger.info(f"Генерация текста заняла {elapsed_time:.2f} секунд")
+    return result
 
 async def get_main_menu(user_id):
     keyboard = [
@@ -416,8 +444,7 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Ответ из базы Q&A для {user_id}: {response}")
     else:
         try:
-            generated = generator(user_input, max_new_tokens=100, num_return_sequences=1, truncation=True)[0][
-                'generated_text']
+            generated = await generate_text(user_input)
             await update.message.reply_text(generated.strip(), reply_markup=reply_markup)
             logger.info(f"Сгенерированный ответ нейронкой для {user_id}: {generated}")
         except Exception as e:
