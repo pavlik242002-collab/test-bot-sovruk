@@ -399,7 +399,7 @@ def main():
         app.add_handler(CommandHandler("start", send_welcome))
         app.add_handler(CommandHandler("getfile", get_file))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        app.add_handler(MessageHandler(filters.DOCUMENT, handle_document))
+        app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
         app.add_error_handler(error_handler)
         app.run_polling()
     except Exception as e:
