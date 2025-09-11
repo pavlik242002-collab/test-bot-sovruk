@@ -411,12 +411,13 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
     normalized_input = user_input.lower()
     if normalized_input in QA_DATABASE:
         answers = QA_DATABASE[normalized_input]
-        response = random.choice(answers) if isinstance(answers, list) else answers  # Случайный выбор или строка
+        response = random.choice(answers) if isinstance(answers, list) else answers
         await update.message.reply_text(response, reply_markup=reply_markup)
         logger.info(f"Ответ из базы Q&A для {user_id}: {response}")
     else:
         try:
-            generated = generator(user_input, max_length=100, num_return_sequences=1)[0]['generated_text']
+            generated = generator(user_input, max_new_tokens=100, num_return_sequences=1, truncation=True)[0][
+                'generated_text']
             await update.message.reply_text(generated.strip(), reply_markup=reply_markup)
             logger.info(f"Сгенерированный ответ нейронкой для {user_id}: {generated}")
         except Exception as e:
