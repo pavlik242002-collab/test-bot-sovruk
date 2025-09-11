@@ -3,8 +3,8 @@ import json
 import logging
 import requests
 from dotenv import load_dotenv
-from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram import InputFile
 
 logging.basicConfig(
@@ -285,8 +285,22 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if user_input == "Скачать файл":
-        await update.message.reply_text("Укажите название файла (например, file.pdf).", reply_markup=reply_markup)
-        logger.info(f"Пользователь {user_id} запросил скачивание файла")
+        if user_id in ALLOWED_ADMINS:
+            files = list_yandex_disk_files(FIXED_FOLDER)
+            if not files:
+                await update.message.reply_text("Папка /documents/ пуста.", reply_markup=reply_markup)
+                return
+
+            inline_keyboard = []
+            for file in files:
+                inline_keyboard.append([InlineKeyboardButton(file['name'], callback_data=file['name'])])
+
+            inline_reply_markup = InlineKeyboardMarkup(inline_keyboard)
+            await update.message.reply_text("Выберите файл для скачивания:", reply_markup=inline_reply_markup)
+            logger.info(f"Администратор {user_id} запросил список файлов для скачивания")
+        else:
+            await update.message.reply_text("Укажите название файла (например, file.pdf). Я поищу его в папке /documents/.", reply_markup=reply_markup)
+            logger.info(f"Пользователь {user_id} запросил скачивание файла")
         return
 
     if user_input == "Загрузить файл":
@@ -386,6 +400,12 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
     )
     logger.info(f"Обработано текстовое сообщение от user_id={user_id}")
 
+async def callback_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    file_name = query.data
+    await search_and_send_file(update.callback_query.message, context, file_name)
+
 async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Ошибка: {context.error}")
     if update and update.message:
@@ -400,6 +420,7 @@ def main():
         app.add_handler(CommandHandler("getfile", get_file))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+        app.add_handler(CallbackQueryHandler(callback_handler))
         app.add_error_handler(error_handler)
         app.run_polling()
     except Exception as e:
