@@ -1,4 +1,5 @@
-python-dotenv
-huggingface-hub
-duckduckgo-search
 python-telegram-bot
+requests
+python-dotenv
+huggingface_hub
+duckduckgo_search
