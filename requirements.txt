@@ -3,3 +3,5 @@ requests
 python-dotenv
 huggingface_hub
 duckduckgo_search
+transformers
+torch
