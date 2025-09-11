@@ -96,6 +96,29 @@ def get_yandex_disk_file(file_path):
         logger.error(f"Ошибка при запросе к Яндекс.Диску: {str(e)}")
         return None
 
+# Функция для загрузки файла на Яндекс.Диск
+def upload_to_yandex_disk(file_name, file_content):
+    path = FIXED_FOLDER + file_name
+    url = f'https://cloud-api.yandex.net/v1/disk/resources/upload?path={path}&overwrite=true'
+    headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            upload_url = response.json()['href']
+            upload_response = requests.put(upload_url, data=file_content)
+            if upload_response.status_code == 201:
+                logger.info(f"Файл {file_name} успешно загружен на Яндекс.Диск.")
+                return True
+            else:
+                logger.error(f"Ошибка загрузки файла {file_name}: код {upload_response.status_code}, текст: {upload_response.text}")
+                return False
+        else:
+            logger.error(f"Ошибка получения URL для загрузки: код {response.status_code}, текст: {response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"Ошибка при загрузке файла на Яндекс.Диск: {str(e)}")
+        return False
+
 def web_search(query):
     cache_file = 'search_cache.json'
     try:
@@ -134,7 +157,10 @@ async def send_welcome(update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Пользователь {user_id} попытался получить доступ, но не в списке разрешённых.")
         return
 
-    keyboard = [['Управление пользователями', 'Скачать файл']] if user_id in ALLOWED_ADMINS else [['Скачать файл']]
+    keyboard = [
+        ['Управление пользователями', 'Скачать файл'],
+        ['Загрузить файл']
+    ] if user_id in ALLOWED_ADMINS else [['Скачать файл']]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
     welcome_message += "Привет! Я чат-бот, который может анализировать нашу переписку, искать информацию в интернете и скачивать файлы с Яндекс.Диска. Как тебя зовут?"
@@ -197,6 +223,37 @@ async def search_and_send_file(update, context, file_name):
         await update.message.reply_text("Файл не найден на Яндекс.Диске или произошла ошибка.")
         logger.error(f"Файл {file_path} не найден на Яндекс.Диске.")
 
+async def handle_document(update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ALLOWED_ADMINS:
+        await update.message.reply_text("Извините, только администраторы могут загружать файлы.")
+        logger.info(f"Пользователь {user_id} попытался загрузить файл, но не является администратором.")
+        return
+
+    if not context.user_data.get('awaiting_file', False):
+        await update.message.reply_text("Не ожидалось загрузки файла. Пожалуйста, используйте кнопку 'Загрузить файл'.")
+        return
+
+    document = update.message.document
+    file_name = document.file_name
+    if not (file_name.endswith('.pdf') or file_name.endswith('.doc') or file_name.endswith('.docx')):
+        await update.message.reply_text("Пожалуйста, загружайте файлы только в формате PDF или Word (.pdf, .doc, .docx).")
+        return
+
+    try:
+        file = await document.get_file()
+        file_content = await file.download_as_bytearray()
+        success = upload_to_yandex_disk(file_name, file_content)
+        if success:
+            await update.message.reply_text(f"Файл '{file_name}' успешно загружен в папку {FIXED_FOLDER} на Яндекс.Диске.")
+        else:
+            await update.message.reply_text("Ошибка при загрузке файла на Яндекс.Диск.")
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка при обработке файла: {str(e)}")
+        logger.error(f"Ошибка при обработке документа: {str(e)}")
+
+    context.user_data.pop('awaiting_file', None)
+
 async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
@@ -208,7 +265,10 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Пользователь {user_id} попытался отправить сообщение, но не в списке разрешённых.")
         return
 
-    admin_keyboard = [['Управление пользователями', 'Скачать файл']] if user_id in ALLOWED_ADMINS else [['Скачать файл']]
+    admin_keyboard = [
+        ['Управление пользователями', 'Скачать файл'],
+        ['Загрузить файл']
+    ] if user_id in ALLOWED_ADMINS else [['Скачать файл']]
     default_reply_markup = ReplyKeyboardMarkup(admin_keyboard, resize_keyboard=True)
 
     if user_input.lower().endswith(('.pdf', '.doc', '.docx')):
@@ -243,6 +303,18 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Укажите название файла (например, file.pdf). Я поищу его в папке /documents/.",
                                         reply_markup=default_reply_markup)
         logger.info(f"Пользователь {user_id} запросил скачивание файла.")
+        return
+
+    if user_input == "Загрузить файл":
+        if user_id not in ALLOWED_ADMINS:
+            await update.message.reply_text("Извините, только администраторы могут загружать файлы.",
+                                            reply_markup=default_reply_markup)
+            logger.info(f"Пользователь {user_id} попытался загрузить файл, но не является администратором.")
+            return
+        context.user_data['awaiting_file'] = True
+        await update.message.reply_text("Пожалуйста, отправьте файл для загрузки (PDF, DOC или DOCX).",
+                                        reply_markup=default_reply_markup)
+        logger.info(f"Администратор {user_id} запросил загрузку файла.")
         return
 
     if user_input == "Назад":
@@ -379,6 +451,7 @@ def main():
         app.add_handler(CommandHandler("start", send_welcome))
         app.add_handler(CommandHandler("getfile", get_file))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        app.add_handler(MessageHandler(filters.DOCUMENT, handle_document))
         app.add_error_handler(error_handler)
         app.run_polling()
     except Exception as e:
