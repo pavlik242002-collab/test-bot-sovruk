@@ -1,17 +1,15 @@
 import os
 import json
 import logging
-import random
 import requests
+import random  # Добавлен импорт для случайного выбора ответа
 from dotenv import load_dotenv
-from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from telegram import InputFile
 from huggingface_hub import InferenceClient
-from concurrent.futures import ThreadPoolExecutor
-import asyncio
+from duckduckgo_search import DDGS
+from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import InputFile
 
-# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -22,142 +20,78 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Инициализация пула потоков для асинхронной генерации
-executor = ThreadPoolExecutor(max_workers=1)
-
 load_dotenv()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-YANDEX_TOKEN = os.getenv("YANDEX_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+YANDEX_TOKEN = os.getenv("YANDEX_TOKEN")  # Токен для Яндекс.Диска
 
-if not TELEGRAM_TOKEN:
-    logger.error("TELEGRAM_TOKEN не указан в .env")
-    raise ValueError("TELEGRAM_TOKEN должен быть указан в .env")
-if not YANDEX_TOKEN:
-    logger.error("YANDEX_TOKEN не указан в .env")
-    raise ValueError("YANDEX_TOKEN должен быть указан в .env")
-if not HF_TOKEN:
-    logger.error("HF_TOKEN не указан в .env")
-    raise ValueError("HF_TOKEN должен быть указан в .env")
+FIXED_FOLDER = '/documents/'  # Фиксированная папка для поиска файлов
 
-FIXED_FOLDER = '/documents/'
-
-# Инициализация клиента Hugging Face
-try:
-    client = InferenceClient(token=HF_TOKEN)
-    logger.info("Клиент Hugging Face успешно инициализирован")
-except Exception as e:
-    logger.error(f"Ошибка инициализации клиента Hugging Face: {str(e)}")
-    raise
-
+# Загрузка списка администраторов из JSON-файла
 def load_allowed_admins():
     try:
         with open('allowed_admins.json', 'r') as f:
-            admins = json.load(f)
-            logger.info(f"Загружены администраторы: {admins}")
-            return admins
+            return json.load(f)
     except FileNotFoundError:
-        logger.warning("Файл allowed_admins.json не найден, используется стандартный ID")
-        return [123456789]
+        return [123456789]  # Замените на ваш user_id
 
+# Сохранение списка администраторов в JSON-файл
 def save_allowed_admins(allowed_admins):
-    try:
-        with open('allowed_admins.json', 'w') as f:
-            json.dump(allowed_admins, f, ensure_ascii=False)
-        logger.info("Список администраторов сохранён")
-    except Exception as e:
-        logger.error(f"Ошибка сохранения allowed_admins.json: {str(e)}")
+    with open('allowed_admins.json', 'w') as f:
+        json.dump(allowed_admins, f, ensure_ascii=False)
 
 ALLOWED_ADMINS = load_allowed_admins()
 
+# Загрузка списка разрешённых пользователей из JSON-файла
 def load_allowed_users():
     try:
         with open('allowed_users.json', 'r') as f:
-            users = json.load(f)
-            logger.info(f"Загружены пользователи: {users}")
-            return users
+            return json.load(f)
     except FileNotFoundError:
-        logger.warning("Файл allowed_users.json не найден")
         return []
 
+# Сохранение списка разрешённых пользователей в JSON-файл
 def save_allowed_users(allowed_users):
-    try:
-        with open('allowed_users.json', 'w') as f:
-            json.dump(allowed_users, f, ensure_ascii=False)
-        logger.info("Список пользователей сохранён")
-    except Exception as e:
-        logger.error(f"Ошибка сохранения allowed_users.json: {str(e)}")
+    with open('allowed_users.json', 'w') as f:
+        json.dump(allowed_users, f, ensure_ascii=False)
 
 ALLOWED_USERS = load_allowed_users()
 
+# Новая функция для загрузки QA-базы данных
 def load_qa_database():
     try:
         with open('qa_database.json', 'r', encoding='utf-8') as f:
-            qa = json.load(f)
-            logger.info(f"Загружена база Q&A: {len(qa)} записей")
-            return qa
+            return json.load(f)
     except FileNotFoundError:
-        logger.warning("Файл qa_database.json не найден, создаётся пустой")
-        return {
-            "руководитель вскс": [
-                "Руководителем ВСКС является [Имя Фамилия]. ВСКС — Всероссийский студенческий корпус спасателей, основанный в 2001 году.",
-                "Текущий руководитель ВСКС — [Имя Фамилия], назначен в [год]."
-            ],
-            "сергей владимирович": "Уточните, о ком идёт речь. Если вы имеете в виду Сергея Владимировича в контексте ВСКС, то таких данных нет."
-        }
+        logger.warning("Файл qa_database.json не найден. QA-функция отключена.")
+        return {}
+    except json.JSONDecodeError as e:
+        logger.error(f"Ошибка чтения qa_database.json: {str(e)}")
+        return {}
 
-QA_DATABASE = load_qa_database()
+# Функция для поиска совпадений в QA-базе (минимальные пересечения по подстрокам)
+def find_qa_match(user_input, qa_db):
+    user_lower = user_input.lower()
+    for question, answers in qa_db.items():
+        question_lower = question.lower()
+        # Минимальное пересечение: если хотя бы одно слово из user_input есть в question
+        user_words = set(user_lower.split())
+        question_words = set(question_lower.split())
+        if user_words.intersection(question_words):
+            return random.choice(answers)  # Случайный выбор из вариантов ответов
+    return None
 
-# Асинхронная функция для генерации текста через Hugging Face
-async def generate_text(input_text):
-    loop = asyncio.get_event_loop()
-    input_text = input_text[:100]  # Ограничение входного текста
-    try:
-        result = await loop.run_in_executor(executor, lambda: client.text_generation(
-            input_text,
-            model="distilgpt2",
-            max_new_tokens=50,
-            do_sample=True,
-            temperature=0.7,
-            top_p=0.9
-        ))
-        logger.info(f"Сгенерирован ответ через Hugging Face: {result}")
-        return result
-    except Exception as e:
-        logger.error(f"Ошибка генерации текста через Hugging Face: {str(e)}")
-        return "Не удалось сгенерировать ответ."
+system_prompt = """
+Вы — полезный чат-бот, который логически анализирует всю историю переписки, чтобы давать последовательные ответы.
+Если вопрос пользователя требует актуальной информации или данных, которых у вас нет, используйте функцию web_search для поиска в интернете.
+Всегда учитывайте полный контекст разговора перед ответом.
+Отвечайте кратко и по делу, на русском языке.
+"""
 
-async def get_main_menu(user_id):
-    keyboard = [
-        ['Управление пользователями', 'Скачать файл'],
-        ['Загрузить файл']
-    ] if user_id in ALLOWED_ADMINS else [['Скачать файл']]
-    logger.info(f"Формирование меню для user_id={user_id}: {keyboard}")
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+histories = {}
+qa_database = load_qa_database()  # Загружаем QA-базу при старте
 
-async def send_welcome(update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-    logger.info(f"Команда /start от user_id={user_id}, chat_id={chat_id}")
-
-    context.user_data.clear()
-    context.user_data["awaiting_name"] = True
-
-    if user_id not in ALLOWED_USERS and user_id not in ALLOWED_ADMINS:
-        await update.message.reply_text(
-            f"Ваш user_id: {user_id}\nИзвините, у вас нет доступа. Передайте ваш user_id администратору.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        logger.info(f"Доступ запрещён для user_id={user_id}")
-        return
-
-    reply_markup = await get_main_menu(user_id)
-    await update.message.reply_text(
-        f"Ваш user_id: {user_id}\nПривет! Я бот для работы с файлами на Яндекс.Диске. Как тебя зовут?",
-        reply_markup=reply_markup
-    )
-    logger.info(f"Отправлено приветственное сообщение для user_id={user_id}")
-
+# Функция для получения списка файлов в папке на Яндекс.Диске
 def list_yandex_disk_files(folder_path):
     url = f'https://cloud-api.yandex.net/v1/disk/resources?path={folder_path}&fields=items.name,items.type,items.path&limit=100'
     headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
@@ -173,6 +107,7 @@ def list_yandex_disk_files(folder_path):
         logger.error(f"Ошибка при запросе списка файлов: {str(e)}")
         return []
 
+# Функция для получения ссылки на файл с Яндекс.Диска
 def get_yandex_disk_file(file_path):
     url = f'https://cloud-api.yandex.net/v1/disk/resources/download?path={file_path}'
     headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
@@ -187,55 +122,108 @@ def get_yandex_disk_file(file_path):
         logger.error(f"Ошибка при запросе к Яндекс.Диску: {str(e)}")
         return None
 
-def upload_to_yandex_disk(file_name, file_content):
-    path = FIXED_FOLDER + file_name
-    url = f'https://cloud-api.yandex.net/v1/disk/resources/upload?path={path}&overwrite=true'
+# Новая функция для загрузки файла на Яндекс.Диск
+def upload_to_yandex_disk(file_content, file_name):
+    file_path = FIXED_FOLDER + file_name
+    url = f'https://cloud-api.yandex.net/v1/disk/resources/upload?path={file_path}&overwrite=true'
     headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
     try:
         response = requests.get(url, headers=headers)
         if response.status_code == 200:
-            upload_url = response.json()['href']
-            upload_response = requests.put(upload_url, data=file_content)
-            if upload_response.status_code == 201:
-                logger.info(f"Файл {file_name} успешно загружен на Яндекс.Диск")
-                return True
+            upload_url = response.json().get('href')
+            if upload_url:
+                upload_headers = {'Content-Type': 'application/octet-stream'}
+                upload_response = requests.post(upload_url, headers=upload_headers, data=file_content)
+                if upload_response.status_code == 201:
+                    logger.info(f"Файл {file_name} успешно загружен на Яндекс.Диск в {FIXED_FOLDER}")
+                    return True
+                else:
+                    logger.error(f"Ошибка загрузки на Яндекс.Диск: код {upload_response.status_code}, текст: {upload_response.text}")
+                    return False
             else:
-                logger.error(f"Ошибка загрузки файла {file_name}: код {upload_response.status_code}")
+                logger.error("Не получен URL для загрузки")
                 return False
         else:
-            logger.error(f"Ошибка получения URL для загрузки: код {response.status_code}")
+            logger.error(f"Ошибка получения URL загрузки: код {response.status_code}, текст: {response.text}")
             return False
     except Exception as e:
-        logger.error(f"Ошибка при загрузке файла на Яндекс.Диск: {str(e)}")
+        logger.error(f"Ошибка при загрузке на Яндекс.Диск: {str(e)}")
         return False
+
+def web_search(query):
+    cache_file = 'search_cache.json'
+    try:
+        with open(cache_file, 'r') as f:
+            cache = json.load(f)
+    except FileNotFoundError:
+        cache = {}
+    if query in cache:
+        logger.info(f"Использую кэш для запроса: {query}")
+        return cache[query]
+    try:
+        with DDGS() as ddgs:
+            results = [r for r in ddgs.text(query, max_results=3)]
+        search_results = json.dumps(results, ensure_ascii=False, indent=2)
+        cache[query] = search_results
+        with open(cache_file, 'w') as f:
+            json.dump(cache, f, ensure_ascii=False)
+        logger.info(f"Поиск выполнен для запроса: {query}")
+        return search_results
+    except Exception as e:
+        logger.error(f"Ошибка при поиске в интернете: {str(e)}")
+        return json.dumps({"error": "Не удалось выполнить поиск."}, ensure_ascii=False)
+
+async def send_welcome(update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+
+    context.user_data.pop('awaiting_user_id', None)
+    context.user_data["awaiting_name"] = True
+
+    welcome_message = f"Ваш user_id: {user_id}\n"
+
+    if user_id not in ALLOWED_USERS and user_id not in ALLOWED_ADMINS:
+        welcome_message += "Извините, у вас нет доступа к этому боту. Передайте ваш user_id администратору для получения доступа."
+        await update.message.reply_text(welcome_message, reply_markup=ReplyKeyboardRemove())
+        logger.info(f"Пользователь {user_id} попытался получить доступ, но не в списке разрешённых.")
+        return
+
+    # Обновлённая клавиатура: добавлена кнопка "Загрузить файл" только для админов
+    keyboard = [['Управление пользователями', 'Скачать файл', 'Загрузить файл']] if user_id in ALLOWED_ADMINS else [['Скачать файл']]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+    welcome_message += "Привет! Я чат-бот, который может анализировать нашу переписку, искать информацию в интернете и скачивать файлы с Яндекс.Диска. Как тебя зовут?"
+    await update.message.reply_text(welcome_message, reply_markup=reply_markup)
+    if chat_id not in histories:
+        histories[chat_id] = {"name": None, "messages": [{"role": "system", "content": system_prompt}]}
+    logger.info(f"Пользователь {chat_id} начал чат с /start.")
 
 async def get_file(update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+
     if user_id not in ALLOWED_USERS and user_id not in ALLOWED_ADMINS:
-        await update.message.reply_text("Извините, у вас нет доступа.", reply_markup=ReplyKeyboardRemove())
-        logger.info(f"Доступ к скачиванию файла запрещён для user_id={user_id}")
+        await update.message.reply_text("Извините, у вас нет доступа к этому боту.", reply_markup=ReplyKeyboardRemove())
+        logger.info(f"Пользователь {user_id} попытался скачать файл, но не в списке разрешённых.")
         return
 
     if not context.args:
-        await update.message.reply_text("Укажите название файла (например, file.pdf).")
+        await update.message.reply_text("Пожалуйста, укажите название файла (например, file.pdf). Файл будет искаться в папке /documents/.")
         return
 
     file_name = ' '.join(context.args).strip()
     await search_and_send_file(update, context, file_name)
 
 async def search_and_send_file(update, context, file_name):
-    user_id = update.effective_user.id
-    reply_markup = await get_main_menu(user_id)
-
     if not (file_name.endswith('.pdf') or file_name.endswith('.doc') or file_name.endswith('.docx')):
-        await update.message.reply_text("Укажите файл формата PDF или Word (.pdf, .doc, .docx).", reply_markup=reply_markup)
+        await update.message.reply_text("Пожалуйста, укажите файл формата PDF или Word (.pdf, .doc, .docx).")
         return
 
     files = list_yandex_disk_files(FIXED_FOLDER)
     matching_file = next((item for item in files if item['name'].lower() == file_name.lower()), None)
 
     if not matching_file:
-        await update.message.reply_text(f"Файл '{file_name}' не найден в папке {FIXED_FOLDER}.", reply_markup=reply_markup)
+        await update.message.reply_text(f"Файл '{file_name}' не найден в папке {FIXED_FOLDER}.")
         return
 
     file_path = matching_file['path']
@@ -244,134 +232,128 @@ async def search_and_send_file(update, context, file_name):
         try:
             file_response = requests.get(download_url)
             if file_response.status_code == 200:
-                file_size = len(file_response.content) / (1024 * 1024)
+                file_size = len(file_response.content) / (1024 * 1024)  # Размер в МБ
                 if file_size > 20:
-                    await update.message.reply_text("Файл слишком большой (>20 МБ).", reply_markup=reply_markup)
+                    await update.message.reply_text("Файл слишком большой (>20 МБ). Telegram не позволяет отправлять такие файлы.")
                     logger.error(f"Файл {file_name} слишком большой: {file_size} МБ")
                     return
                 await update.message.reply_document(
                     document=InputFile(file_response.content, filename=file_name),
-                    caption=f"Файл {file_name} из {FIXED_FOLDER}",
-                    reply_markup=reply_markup
+                    caption=f"Файл {file_name} из {FIXED_FOLDER}"
                 )
-                logger.info(f"Файл {file_name} отправлен пользователю {user_id}")
+                logger.info(f"Файл {file_name} успешно отправлен пользователю {update.effective_user.id}")
             else:
-                await update.message.reply_text("Не удалось скачать файл с Яндекс.Диска.", reply_markup=reply_markup)
-                logger.error(f"Ошибка загрузки файла {file_path}: код {file_response.status_code}")
+                await update.message.reply_text("Не удалось загрузить файл с Яндекс.Диска.")
+                logger.error(f"Ошибка загрузки файла {file_path}: код {file_response.status_code}, текст: {file_response.text}")
         except Exception as e:
-            await update.message.reply_text(f"Ошибка при отправке файла: {str(e)}", reply_markup=reply_markup)
+            await update.message.reply_text(f"Ошибка при отправке файла: {str(e)}")
             logger.error(f"Ошибка при отправке файла {file_path}: {str(e)}")
     else:
-        await update.message.reply_text("Файл не найден на Яндекс.Диске.", reply_markup=reply_markup)
-        logger.error(f"Файл {file_path} не найден на Яндекс.Диске")
+        await update.message.reply_text("Файл не найден на Яндекс.Диске или произошла ошибка.")
+        logger.error(f"Файл {file_path} не найден на Яндекс.Диске.")
 
+# Новый обработчик для документов (только для админов в состоянии awaiting_upload)
 async def handle_document(update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-    reply_markup = await get_main_menu(user_id)
-
     if user_id not in ALLOWED_ADMINS:
-        await update.message.reply_text("Только администраторы могут загружать файлы.", reply_markup=reply_markup)
-        logger.info(f"Пользователь {user_id} попытался загрузить файл, но не администратор")
+        logger.info(f"Пользователь {user_id} отправил документ, но не является администратором.")
         return
 
-    if not context.user_data.get('awaiting_file', False):
-        await update.message.reply_text("Используйте кнопку 'Загрузить файл' для загрузки.", reply_markup=reply_markup)
-        logger.info(f"Попытка загрузки файла без активации режима загрузки: user_id={user_id}")
+    if not context.user_data.get('awaiting_upload', False):
+        await update.message.reply_text("Пожалуйста, используйте кнопку 'Загрузить файл' перед отправкой документа.")
         return
 
     document = update.message.document
     file_name = document.file_name
     if not (file_name.endswith('.pdf') or file_name.endswith('.doc') or file_name.endswith('.docx')):
-        await update.message.reply_text("Загружайте файлы только в формате PDF или Word (.pdf, .doc, .docx).", reply_markup=reply_markup)
-        logger.info(f"Неподдерживаемый формат файла {file_name} от user_id={user_id}")
+        await update.message.reply_text("Поддерживаются только файлы .pdf, .doc, .docx.")
+        return
+
+    file_size = document.file_size / (1024 * 1024)  # Размер в МБ
+    if file_size > 50:  # Лимит Яндекс.Диска для простоты
+        await update.message.reply_text("Файл слишком большой (>50 МБ).")
         return
 
     try:
-        file = await document.get_file()
+        file = await context.bot.get_file(document.file_id)
         file_content = await file.download_as_bytearray()
-        success = upload_to_yandex_disk(file_name, file_content)
-        if success:
-            await update.message.reply_text(f"Файл '{file_name}' загружен в {FIXED_FOLDER}.", reply_markup=reply_markup)
-            logger.info(f"Файл {file_name} загружен пользователем {user_id}")
-        else:
-            await update.message.reply_text("Ошибка при загрузке файла на Яндекс.Диск.", reply_markup=reply_markup)
-            logger.error(f"Ошибка загрузки файла {file_name} пользователем {user_id}")
-    except Exception as e:
-        await update.message.reply_text(f"Ошибка обработки файла: {str(e)}", reply_markup=reply_markup)
-        logger.error(f"Ошибка обработки файла {file_name}: {str(e)}")
 
-    context.user_data.pop('awaiting_file', None)
+        if upload_to_yandex_disk(file_content, file_name):
+            await update.message.reply_text(f"Файл '{file_name}' успешно загружен в {FIXED_FOLDER} на Яндекс.Диск!")
+        else:
+            await update.message.reply_text("Ошибка при загрузке файла на Яндекс.Диск.")
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка при обработке файла: {str(e)}")
+        logger.error(f"Ошибка обработки документа от {user_id}: {str(e)}")
+
+    context.user_data.pop('awaiting_upload', None)
+    logger.info(f"Администратор {user_id} загрузил файл {file_name}.")
 
 async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     user_input = update.message.text.strip()
-    logger.info(f"Сообщение от user_id={user_id}, chat_id={chat_id}: {user_input}")
-
-    reply_markup = await get_main_menu(user_id)
+    logger.info(f"Получено сообщение от {chat_id} (user_id: {user_id}): {user_input}")
 
     if user_id not in ALLOWED_USERS and user_id not in ALLOWED_ADMINS:
-        await update.message.reply_text("У вас нет доступа к боту.", reply_markup=ReplyKeyboardRemove())
-        logger.info(f"Доступ запрещён для user_id={user_id}")
+        await update.message.reply_text("Извините, у вас нет доступа к этому боту.", reply_markup=ReplyKeyboardRemove())
+        logger.info(f"Пользователь {user_id} попытался отправить сообщение, но не в списке разрешённых.")
+        return
+
+    # Обновлённая клавиатура: добавлена кнопка "Загрузить файл" только для админов
+    admin_keyboard = [['Управление пользователями', 'Скачать файл', 'Загрузить файл']] if user_id in ALLOWED_ADMINS else [['Скачать файл']]
+    default_reply_markup = ReplyKeyboardMarkup(admin_keyboard, resize_keyboard=True)
+
+    if user_input.lower().endswith(('.pdf', '.doc', '.docx')):
+        await search_and_send_file(update, context, user_input)
         return
 
     if context.user_data.get("awaiting_name", False):
-        context.user_data["name"] = user_input
+        histories[chat_id]["name"] = user_input
         context.user_data["awaiting_name"] = False
-        await update.message.reply_text(
-            f"Рад знакомству, {user_input}! Используй кнопки для работы с файлами.",
-            reply_markup=reply_markup
-        )
-        logger.info(f"Имя пользователя {user_id}: {user_input}")
+        await update.message.reply_text(f"Рад знакомству, {user_input}! Задавай свои вопросы или просто напиши имя файла для скачивания (например, file.pdf).",
+                                        reply_markup=default_reply_markup)
+        logger.info(f"Имя пользователя {chat_id} сохранено: {user_input}")
         return
 
     if user_input == "Управление пользователями":
         if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text("Только администраторы могут управлять пользователями.", reply_markup=reply_markup)
-            logger.info(f"Попытка управления пользователями от неадминистратора user_id={user_id}")
+            await update.message.reply_text("Извините, только администраторы могут управлять пользователями.",
+                                            reply_markup=default_reply_markup)
+            logger.info(f"Пользователь {user_id} попытался использовать управление пользователями, но не является администратором.")
             return
         keyboard = [
             ['Добавить пользователя', 'Добавить администратора'],
             ['Список пользователей', 'Список администраторов'],
             ['Назад']
         ]
-        await update.message.reply_text("Выберите действие:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False))
-        logger.info(f"Администратор {user_id} открыл управление пользователями")
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await update.message.reply_text("Выберите действие:", reply_markup=reply_markup)
+        logger.info(f"Администратор {user_id} запросил управление пользователями.")
         return
 
     if user_input == "Скачать файл":
-        if user_id in ALLOWED_ADMINS:
-            files = list_yandex_disk_files(FIXED_FOLDER)
-            if not files:
-                await update.message.reply_text("Папка /documents/ пуста.", reply_markup=reply_markup)
-                return
-
-            inline_keyboard = []
-            for file in files:
-                inline_keyboard.append([InlineKeyboardButton(file['name'], callback_data=file['name'])])
-
-            inline_reply_markup = InlineKeyboardMarkup(inline_keyboard)
-            await update.message.reply_text("Выберите файл для скачивания:", reply_markup=inline_reply_markup)
-            logger.info(f"Администратор {user_id} запросил список файлов для скачивания")
-        else:
-            await update.message.reply_text("Укажите название файла (например, file.pdf). Я поищу его в папке /documents/.", reply_markup=reply_markup)
-            logger.info(f"Пользователь {user_id} запросил скачивание файла")
+        await update.message.reply_text("Укажите название файла (например, file.pdf). Я поищу его в папке /documents/.",
+                                        reply_markup=default_reply_markup)
+        logger.info(f"Пользователь {user_id} запросил скачивание файла.")
         return
 
+    # Новый обработчик для кнопки "Загрузить файл" (только для админов)
     if user_input == "Загрузить файл":
         if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text("Только администраторы могут загружать файлы.", reply_markup=reply_markup)
-            logger.info(f"Попытка загрузки файла от неадминистратора user_id={user_id}")
+            await update.message.reply_text("Извините, только администраторы могут загружать файлы.",
+                                            reply_markup=default_reply_markup)
+            logger.info(f"Пользователь {user_id} попытался загрузить файл, но не является администратором.")
             return
-        context.user_data['awaiting_file'] = True
-        await update.message.reply_text("Отправьте файл (PDF, DOC или DOCX).", reply_markup=reply_markup)
-        logger.info(f"Администратор {user_id} запросил загрузку файла")
+        await update.message.reply_text("Отправьте файл (.pdf, .doc, .docx) для загрузки в /documents/ на Яндекс.Диск.",
+                                        reply_markup=default_reply_markup)
+        context.user_data['awaiting_upload'] = True
+        logger.info(f"Администратор {user_id} начал процесс загрузки файла.")
         return
 
     if user_input == "Назад":
-        await update.message.reply_text("Возвращение в главное меню.", reply_markup=reply_markup)
-        logger.info(f"Пользователь {user_id} вернулся в главное меню")
+        await update.message.reply_text("Возвращение в главное меню.", reply_markup=default_reply_markup)
+        logger.info(f"Пользователь {user_id} вернулся в главное меню.")
         return
 
     if context.user_data.get('awaiting_user_id'):
@@ -379,112 +361,131 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
             new_id = int(user_input)
             if context.user_data['awaiting_user_id'] == 'add_user':
                 if new_id in ALLOWED_USERS:
-                    await update.message.reply_text(f"Пользователь с ID {new_id} уже имеет доступ.", reply_markup=reply_markup)
+                    await update.message.reply_text(f"Пользователь с ID {new_id} уже имеет доступ.",
+                                                    reply_markup=default_reply_markup)
                     return
                 ALLOWED_USERS.append(new_id)
                 save_allowed_users(ALLOWED_USERS)
-                await update.message.reply_text(f"Пользователь с ID {new_id} добавлен.", reply_markup=reply_markup)
-                logger.info(f"Администратор {user_id} добавил пользователя {new_id}")
+                await update.message.reply_text(f"Пользователь с ID {new_id} успешно добавлен!",
+                                                reply_markup=default_reply_markup)
+                logger.info(f"Администратор {user_id} добавил пользователя {new_id} в список разрешённых.")
             elif context.user_data['awaiting_user_id'] == 'add_admin':
                 if new_id in ALLOWED_ADMINS:
-                    await update.message.reply_text(f"Пользователь с ID {new_id} уже администратор.", reply_markup=reply_markup)
+                    await update.message.reply_text(f"Пользователь с ID {new_id} уже является администратором.",
+                                                    reply_markup=default_reply_markup)
                     return
                 ALLOWED_ADMINS.append(new_id)
                 save_allowed_admins(ALLOWED_ADMINS)
-                await update.message.reply_text(f"Пользователь с ID {new_id} назначен администратором.", reply_markup=reply_markup)
-                logger.info(f"Администратор {user_id} назначил администратора {new_id}")
-            context.user_data.pop('awaiting_user_id')
+                await update.message.reply_text(f"Пользователь с ID {new_id} успешно назначен администратором!",
+                                                reply_markup=default_reply_markup)
+                logger.info(f"Администратор {user_id} назначил пользователя {new_id} администратором.")
+            context.user_data.pop('awaiting_user_id', None)
+            return
         except ValueError:
-            await update.message.reply_text("Ошибка: user_id должен быть числом.", reply_markup=reply_markup)
-            logger.error(f"Неверный формат user_id от {user_id}: {user_input}")
-        return
+            await update.message.reply_text("Ошибка: user_id должен быть числом.", reply_markup=default_reply_markup)
+            logger.error(f"Ошибка: Неверный формат user_id от {user_id}.")
+            return
 
     if user_input == "Добавить пользователя":
         if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text("Только администраторы могут добавлять пользователей.", reply_markup=reply_markup)
-            logger.info(f"Попытка добавления пользователя от неадминистратора user_id={user_id}")
+            await update.message.reply_text("Извините, только администраторы могут добавлять новых пользователей.",
+                                            reply_markup=default_reply_markup)
+            logger.info(f"Пользователь {user_id} попытался добавить пользователя, но не является администратором.")
             return
+        await update.message.reply_text("Пожалуйста, укажите user_id для добавления.",
+                                        reply_markup=default_reply_markup)
         context.user_data['awaiting_user_id'] = 'add_user'
-        await update.message.reply_text("Укажите user_id для добавления.", reply_markup=reply_markup)
-        logger.info(f"Администратор {user_id} запросил добавление пользователя")
+        logger.info(f"Администратор {user_id} запросил добавление пользователя.")
         return
 
     if user_input == "Добавить администратора":
         if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text("Только администраторы могут назначать администраторов.", reply_markup=reply_markup)
-            logger.info(f"Попытка добавления администратора от неадминистратора user_id={user_id}")
+            await update.message.reply_text("Извините, только администраторы могут назначать новых администраторов.",
+                                            reply_markup=default_reply_markup)
+            logger.info(f"Пользователь {user_id} попытался добавить администратора, но не является администратором.")
             return
+        await update.message.reply_text("Пожалуйста, укажите user_id для назначения администратором.",
+                                        reply_markup=default_reply_markup)
         context.user_data['awaiting_user_id'] = 'add_admin'
-        await update.message.reply_text("Укажите user_id для назначения администратором.", reply_markup=reply_markup)
-        logger.info(f"Администратор {user_id} запросил добавление администратора")
+        logger.info(f"Администратор {user_id} запросил добавление администратора.")
         return
 
     if user_input == "Список пользователей":
         if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text("Только администраторы могут просматривать список пользователей.", reply_markup=reply_markup)
-            logger.info(f"Попытка просмотра списка пользователей от неадминистратора user_id={user_id}")
+            await update.message.reply_text("Извините, только администраторы могут просматривать список пользователей.",
+                                            reply_markup=default_reply_markup)
+            logger.info(f"Пользователь {user_id} попытался просмотреть список пользователей, но не является администратором.")
             return
         if not ALLOWED_USERS:
-            await update.message.reply_text("Список пользователей пуст.", reply_markup=reply_markup)
+            await update.message.reply_text("Список разрешённых пользователей пуст.", reply_markup=default_reply_markup)
             return
         users_list = "\n".join([f"ID: {uid}" for uid in ALLOWED_USERS])
-        await update.message.reply_text(f"Разрешённые пользователи:\n{users_list}", reply_markup=reply_markup)
-        logger.info(f"Администратор {user_id} запросил список пользователей")
+        await update.message.reply_text(f"Разрешённые пользователи:\n{users_list}", reply_markup=default_reply_markup)
+        logger.info(f"Администратор {user_id} запросил список разрешённых пользователей.")
         return
 
     if user_input == "Список администраторов":
         if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text("Только администраторы могут просматривать список администраторов.", reply_markup=reply_markup)
-            logger.info(f"Попытка просмотра списка администраторов от неадминистратора user_id={user_id}")
+            await update.message.reply_text("Извините, только администраторы могут просматривать список администраторов.",
+                                            reply_markup=default_reply_markup)
+            logger.info(f"Пользователь {user_id} попытался просмотреть список администраторов, но не является администратором.")
             return
         if not ALLOWED_ADMINS:
-            await update.message.reply_text("Список администраторов пуст.", reply_markup=reply_markup)
+            await update.message.reply_text("Список администраторов пуст.", reply_markup=default_reply_markup)
             return
         admins_list = "\n".join([f"ID: {uid}" for uid in ALLOWED_ADMINS])
-        await update.message.reply_text(f"Администраторы:\n{admins_list}", reply_markup=reply_markup)
-        logger.info(f"Администратор {user_id} запросил список администраторов")
+        await update.message.reply_text(f"Администраторы:\n{admins_list}", reply_markup=default_reply_markup)
+        logger.info(f"Администратор {user_id} запросил список администраторов.")
         return
 
-    if user_input.lower().endswith(('.pdf', '.doc', '.docx')):
-        await search_and_send_file(update, context, user_input)
+    # Проверка QA-базы перед обработкой через HF
+    qa_match = find_qa_match(user_input, qa_database)
+    if qa_match:
+        user_name = histories.get(chat_id, {}).get("name", "Друг")
+        final_response = f"{user_name}, {qa_match}"
+        await update.message.reply_text(final_response, reply_markup=default_reply_markup)
+        logger.info(f"Ответ из QA-базы для запроса: {user_input}")
         return
 
-    # Обработка запроса в QA_DATABASE
-    normalized_input = user_input.lower().strip()
-    matching_key = None
-    for key in QA_DATABASE:
-        if normalized_input in key.lower() or key.lower() in normalized_input:
-            matching_key = key
-            break
+    if chat_id not in histories:
+        histories[chat_id] = {"name": None, "messages": [{"role": "system", "content": system_prompt}]}
 
-    if matching_key:
-        answers = QA_DATABASE[matching_key]
-        response = random.choice(answers) if isinstance(answers, list) else answers
-        await update.message.reply_text(response, reply_markup=reply_markup)
-        logger.info(f"Ответ из базы Q&A для user_id={user_id}, запрос='{user_input}': {response}")
-    else:
-        try:
-            generated = await generate_text(user_input)
-            await update.message.reply_text(generated.strip(), reply_markup=reply_markup)
-            logger.info(f"Ответ через Hugging Face для user_id={user_id}, запрос='{user_input}': {generated}")
-        except Exception as e:
-            await update.message.reply_text(
-                "Извините, я не знаю ответа на этот вопрос. Попробуйте уточнить запрос или использовать кнопки меню.",
-                reply_markup=reply_markup
-            )
-            logger.error(f"Ошибка генерации ответа через Hugging Face для user_id={user_id}: {str(e)}")
+    histories[chat_id]["messages"].append({"role": "user", "content": user_input})
+    if len(histories[chat_id]["messages"]) > 20:
+        histories[chat_id]["messages"] = histories[chat_id]["messages"][:1] + histories[chat_id]["messages"][-19:]
 
-async def callback_handler(update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    file_name = query.data
-    await search_and_send_file(update.callback_query.message, context, file_name)
+    need_search = any(word in user_input.lower() for word in
+                      ["актуальная информация", "последние новости", "найди в интернете", "поиск"])
+    if need_search:
+        logger.info(f"Выполняется поиск для запроса: {user_input}")
+        search_results = web_search(user_input)
+        histories[chat_id]["messages"].append({"role": "assistant", "content": f"Результаты поиска: {search_results}"})
+
+    messages = histories[chat_id]["messages"]
+
+    try:
+        client = InferenceClient(model="mistralai/Mixtral-8x7B-Instruct-v0.1", token=HF_TOKEN)
+        response = client.chat.completions.create(
+            messages=messages,
+            max_tokens=150,
+            temperature=0.5,
+            top_p=0.8
+        )
+        response_text = response.choices[0].message.content.strip()
+        logger.info(f"Ответ модели: {response_text}")
+    except Exception as e:
+        logger.error(f"Ошибка при вызове модели: {str(e)}")
+        response_text = f"Извините, произошла ошибка: {str(e)}"
+
+    user_name = histories[chat_id]["name"] or "Друг"
+    final_response = f"{user_name}, {response_text}"
+    histories[chat_id]["messages"].append({"role": "assistant", "content": response_text})
+    await update.message.reply_text(final_response, reply_markup=default_reply_markup)
 
 async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Ошибка: {context.error}")
+    logger.error(f"Update {update} caused error {context.error}")
     if update and update.message:
-        reply_markup = await get_main_menu(update.effective_user.id)
-        await update.message.reply_text("Произошла ошибка, попробуйте позже.", reply_markup=reply_markup)
+        await update.message.reply_text("Произошла ошибка, попробуйте позже.")
 
 def main():
     logger.info("Запуск Telegram бота...")
@@ -493,13 +494,12 @@ def main():
         app.add_handler(CommandHandler("start", send_welcome))
         app.add_handler(CommandHandler("getfile", get_file))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        # Новый handler для документов
         app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-        app.add_handler(CallbackQueryHandler(callback_handler))
         app.add_error_handler(error_handler)
         app.run_polling()
     except Exception as e:
-        logger.error(f"Критическая ошибка при запуске бота: {str(e)}")
-        raise
+        logger.error(f"Ошибка при запуске бота: {str(e)}")
 
 if __name__ == "__main__":
     main()
