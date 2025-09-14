@@ -2,7 +2,7 @@ import os
 import json
 import logging
 import requests
-import random  # Добавлен импорт для случайного выбора ответа
+import random
 from dotenv import load_dotenv
 from huggingface_hub import InferenceClient
 from duckduckgo_search import DDGS
@@ -23,11 +23,54 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 HF_TOKEN = os.getenv("HF_TOKEN")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-YANDEX_TOKEN = os.getenv("YANDEX_TOKEN")  # Токен для Яндекс.Диска
+YANDEX_TOKEN = os.getenv("YANDEX_TOKEN")
 
-FIXED_FOLDER = '/documents/'  # Фиксированная папка для поиска файлов
+# Словарь федеральных округов и их регионов
+FEDERAL_DISTRICTS = {
+    "Центральный федеральный округ": [
+        "Белгородская область", "Брянская область", "Владимирская область", "Воронежская область",
+        "Ивановская область", "Калужская область", "Костромская область", "Курская область",
+        "Липецкая область", "Московская область", "Орловская область", "Рязанская область",
+        "Смоленская область", "Тамбовская область", "Тверская область", "Тульская область",
+        "Ярославская область", "Москва"
+    ],
+    "Северо-Западный федеральный округ": [
+        "Республика Карелия", "Республика Коми", "Архангельская область", "Вологодская область",
+        "Ленинградская область", "Мурманская область", "Новгородская область", "Псковская область",
+        "Калининградская область", "Ненецкий автономный округ", "Санкт-Петербург"
+    ],
+    "Южный федеральный округ": [
+        "Республика Адыгея", "Республика Калмыкия", "Республика Крым", "Краснодарский край",
+        "Астраханская область", "Волгоградская область", "Ростовская область", "Севастополь"
+    ],
+    "Северо-Кавказский федеральный округ": [
+        "Республика Дагестан", "Республика Ингушетия", "Кабардино-Балкарская Республика",
+        "Карачаево-Черкесская Республика", "Республика Северная Осетия — Алания",
+        "Чеченская Республика", "Ставропольский край"
+    ],
+    "Приволжский федеральный округ": [
+        "Республика Башкортостан", "Республика Марий Эл", "Республика Мордовия", "Республика Татарстан",
+        "Удмуртская Республика", "Чувашская Республика", "Кировская область", "Нижегородская область",
+        "Оренбургская область", "Пензенская область", "Пермский край", "Самарская область",
+        "Саратовская область", "Ульяновская область"
+    ],
+    "Уральский федеральный округ": [
+        "Курганская область", "Свердловская область", "Тюменская область", "Ханты-Мансийский автономный округ — Югра",
+        "Челябинская область", "Ямало-Ненецкий автономный округ"
+    ],
+    "Сибирский федеральный округ": [
+        "Республика Алтай", "Республика Тыва", "Республика Хакасия", "Алтайский край",
+        "Красноярский край", "Иркутская область", "Кемеровская область", "Новосибирская область",
+        "Омская область", "Томская область", "Забайкальский край"
+    ],
+    "Дальневосточный федеральный округ": [
+        "Республика Саха (Якутия)", "Приморский край", "Хабаровский край", "Амурская область",
+        "Камчатский край", "Магаданская область", "Сахалинская область", "Еврейская автономная область",
+        "Чукотский автономный округ"
+    ]
+}
 
-# Загрузка списка администраторов из JSON-файла
+
 def load_allowed_admins():
     try:
         with open('allowed_admins.json', 'r') as f:
@@ -35,14 +78,15 @@ def load_allowed_admins():
     except FileNotFoundError:
         return [123456789]  # Замените на ваш user_id
 
-# Сохранение списка администраторов в JSON-файл
+
 def save_allowed_admins(allowed_admins):
     with open('allowed_admins.json', 'w') as f:
         json.dump(allowed_admins, f, ensure_ascii=False)
 
+
 ALLOWED_ADMINS = load_allowed_admins()
 
-# Загрузка списка разрешённых пользователей из JSON-файла
+
 def load_allowed_users():
     try:
         with open('allowed_users.json', 'r') as f:
@@ -50,14 +94,31 @@ def load_allowed_users():
     except FileNotFoundError:
         return []
 
-# Сохранение списка разрешённых пользователей в JSON-файл
+
 def save_allowed_users(allowed_users):
     with open('allowed_users.json', 'w') as f:
         json.dump(allowed_users, f, ensure_ascii=False)
 
+
 ALLOWED_USERS = load_allowed_users()
 
-# Новая функция для загрузки QA-базы данных
+
+def load_user_profiles():
+    try:
+        with open('user_profiles.json', 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+
+def save_user_profiles(profiles):
+    with open('user_profiles.json', 'w', encoding='utf-8') as f:
+        json.dump(profiles, f, ensure_ascii=False, indent=2)
+
+
+USER_PROFILES = load_user_profiles()
+
+
 def load_qa_database():
     try:
         with open('qa_database.json', 'r', encoding='utf-8') as f:
@@ -69,17 +130,17 @@ def load_qa_database():
         logger.error(f"Ошибка чтения qa_database.json: {str(e)}")
         return {}
 
-# Функция для поиска совпадений в QA-базе (минимальные пересечения по подстрокам)
+
 def find_qa_match(user_input, qa_db):
     user_lower = user_input.lower()
     for question, answers in qa_db.items():
         question_lower = question.lower()
-        # Минимальное пересечение: если хотя бы одно слово из user_input есть в question
         user_words = set(user_lower.split())
         question_words = set(question_lower.split())
         if user_words.intersection(question_words):
-            return random.choice(answers)  # Случайный выбор из вариантов ответов
+            return random.choice(answers)
     return None
+
 
 system_prompt = """
 Вы — полезный чат-бот, который логически анализирует всю историю переписки, чтобы давать последовательные ответы.
@@ -89,9 +150,42 @@ system_prompt = """
 """
 
 histories = {}
-qa_database = load_qa_database()  # Загружаем QA-базу при старте
+qa_database = load_qa_database()
 
-# Функция для получения списка файлов в папке на Яндекс.Диске
+
+def create_yandex_folder(folder_path):
+    # Сначала создаём корневую папку /regions, если она не существует
+    root_folder = '/regions'
+    url = f'https://cloud-api.yandex.net/v1/disk/resources?path={root_folder}'
+    headers = {'Authorization': f'OAuth {YANDEX_TOKEN}', 'Content-Type': 'application/json'}
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            response = requests.put(url, headers=headers)
+            if response.status_code not in (201, 409):
+                logger.error(
+                    f"Ошибка создания корневой папки {root_folder}: код {response.status_code}, текст: {response.text}")
+                return False
+            logger.info(f"Корневая папка {root_folder} успешно создана.")
+
+        # Создаём папку региона внутри /regions
+        url = f'https://cloud-api.yandex.net/v1/disk/resources?path={folder_path}'
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            logger.info(f"Папка {folder_path} уже существует.")
+            return True
+        response = requests.put(url, headers=headers)
+        if response.status_code in (201, 409):
+            logger.info(f"Папка {folder_path} успешно создана.")
+            return True
+        else:
+            logger.error(f"Ошибка создания папки {folder_path}: код {response.status_code}, текст: {response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"Ошибка при создании папки {folder_path}: {str(e)}")
+        return False
+
+
 def list_yandex_disk_files(folder_path):
     url = f'https://cloud-api.yandex.net/v1/disk/resources?path={folder_path}&fields=items.name,items.type,items.path&limit=100'
     headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
@@ -107,7 +201,7 @@ def list_yandex_disk_files(folder_path):
         logger.error(f"Ошибка при запросе списка файлов: {str(e)}")
         return []
 
-# Функция для получения ссылки на файл с Яндекс.Диска
+
 def get_yandex_disk_file(file_path):
     url = f'https://cloud-api.yandex.net/v1/disk/resources/download?path={file_path}'
     headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
@@ -122,9 +216,9 @@ def get_yandex_disk_file(file_path):
         logger.error(f"Ошибка при запросе к Яндекс.Диску: {str(e)}")
         return None
 
-# Новая функция для загрузки файла на Яндекс.Диск
-def upload_to_yandex_disk(file_content, file_name):
-    file_path = FIXED_FOLDER + file_name
+
+def upload_to_yandex_disk(file_content, file_name, folder_path):
+    file_path = folder_path + file_name
     url = f'https://cloud-api.yandex.net/v1/disk/resources/upload?path={file_path}&overwrite=true'
     headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
     try:
@@ -132,13 +226,13 @@ def upload_to_yandex_disk(file_content, file_name):
         if response.status_code == 200:
             upload_url = response.json().get('href')
             if upload_url:
-                upload_headers = {'Content-Type': 'application/octet-stream'}
-                upload_response = requests.post(upload_url, headers=upload_headers, data=file_content)
-                if upload_response.status_code == 201:
-                    logger.info(f"Файл {file_name} успешно загружен на Яндекс.Диск в {FIXED_FOLDER}")
+                upload_response = requests.put(upload_url, data=file_content)
+                if upload_response.status_code in (201, 202):
+                    logger.info(f"Файл {file_name} успешно загружен на Яндекс.Диск в {folder_path}")
                     return True
                 else:
-                    logger.error(f"Ошибка загрузки на Яндекс.Диск: код {upload_response.status_code}, текст: {upload_response.text}")
+                    logger.error(
+                        f"Ошибка загрузки на Яндекс.Диск: код {upload_response.status_code}, текст: {upload_response.text}")
                     return False
             else:
                 logger.error("Не получен URL для загрузки")
@@ -149,6 +243,7 @@ def upload_to_yandex_disk(file_content, file_name):
     except Exception as e:
         logger.error(f"Ошибка при загрузке на Яндекс.Диск: {str(e)}")
         return False
+
 
 def web_search(query):
     cache_file = 'search_cache.json'
@@ -173,30 +268,51 @@ def web_search(query):
         logger.error(f"Ошибка при поиске в интернете: {str(e)}")
         return json.dumps({"error": "Не удалось выполнить поиск."}, ensure_ascii=False)
 
+
 async def send_welcome(update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
 
+    # Очистка состояний
     context.user_data.pop('awaiting_user_id', None)
-    context.user_data["awaiting_name"] = True
+    context.user_data.pop('awaiting_fio', None)
+    context.user_data.pop('awaiting_federal_district', None)
+    context.user_data.pop('awaiting_region', None)
+    context.user_data.pop('selected_federal_district', None)
 
-    welcome_message = f"Ваш user_id: {user_id}\n"
-
+    # Проверка доступа
     if user_id not in ALLOWED_USERS and user_id not in ALLOWED_ADMINS:
-        welcome_message += "Извините, у вас нет доступа к этому боту. Передайте ваш user_id администратору для получения доступа."
+        welcome_message = f"Ваш user_id: {user_id}\nИзвините, у вас нет доступа к этому боту. Передайте ваш user_id администратору для получения доступа."
         await update.message.reply_text(welcome_message, reply_markup=ReplyKeyboardRemove())
         logger.info(f"Пользователь {user_id} попытался получить доступ, но не в списке разрешённых.")
         return
 
-    # Обновлённая клавиатура: добавлена кнопка "Загрузить файл" только для админов
-    keyboard = [['Управление пользователями', 'Скачать файл', 'Загрузить файл']] if user_id in ALLOWED_ADMINS else [['Скачать файл']]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    # Проверка регистрации
+    if user_id not in USER_PROFILES:
+        context.user_data["awaiting_fio"] = True
+        welcome_message = "Доброго времени суток!\nДля начала работы необходимо пройти регистрацию, напишите свое ФИО."
+        await update.message.reply_text(welcome_message, reply_markup=ReplyKeyboardRemove())
+        logger.info(f"Пользователь {chat_id} начал регистрацию.")
+        return
 
-    welcome_message += "Привет! Я чат-бот, который может анализировать нашу переписку, искать информацию в интернете и скачивать файлы с Яндекс.Диска. Как тебя зовут?"
-    await update.message.reply_text(welcome_message, reply_markup=reply_markup)
-    if chat_id not in histories:
-        histories[chat_id] = {"name": None, "messages": [{"role": "system", "content": system_prompt}]}
-    logger.info(f"Пользователь {chat_id} начал чат с /start.")
+    # Если зарегистрирован, перейти к имени (если не сохранено) или главному меню
+    profile = USER_PROFILES[user_id]
+    if profile.get("name") is None:
+        context.user_data["awaiting_name"] = True
+        await update.message.reply_text("Как я могу к Вам обращаться (кратко для удобства)?",
+                                        reply_markup=ReplyKeyboardRemove())
+    else:
+        await show_main_menu(update, context)
+
+
+async def show_main_menu(update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    admin_keyboard = [
+        ['Управление пользователями', 'Скачать файл', 'Загрузить файл']] if user_id in ALLOWED_ADMINS else [
+        ['Скачать файл']]
+    reply_markup = ReplyKeyboardMarkup(admin_keyboard, resize_keyboard=True)
+    context.user_data['default_reply_markup'] = reply_markup
+
 
 async def get_file(update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -207,23 +323,36 @@ async def get_file(update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Пользователь {user_id} попытался скачать файл, но не в списке разрешённых.")
         return
 
+    if user_id not in USER_PROFILES:
+        await update.message.reply_text("Сначала пройдите регистрацию с /start.")
+        return
+
     if not context.args:
-        await update.message.reply_text("Пожалуйста, укажите название файла (например, file.pdf). Файл будет искаться в папке /documents/.")
+        await update.message.reply_text(
+            "Пожалуйста, укажите название файла (например, file.pdf). Файл будет искаться в вашей региональной папке.")
         return
 
     file_name = ' '.join(context.args).strip()
     await search_and_send_file(update, context, file_name)
 
+
 async def search_and_send_file(update, context, file_name):
+    user_id = update.effective_user.id
+    profile = USER_PROFILES.get(user_id)
+    if not profile or "region" not in profile:
+        await update.message.reply_text("Ошибка: регион не определён. Перезапустите /start.")
+        return
+
+    region_folder = f"/regions/{profile['region']}/"
     if not (file_name.endswith('.pdf') or file_name.endswith('.doc') or file_name.endswith('.docx')):
         await update.message.reply_text("Пожалуйста, укажите файл формата PDF или Word (.pdf, .doc, .docx).")
         return
 
-    files = list_yandex_disk_files(FIXED_FOLDER)
+    files = list_yandex_disk_files(region_folder)
     matching_file = next((item for item in files if item['name'].lower() == file_name.lower()), None)
 
     if not matching_file:
-        await update.message.reply_text(f"Файл '{file_name}' не найден в папке {FIXED_FOLDER}.")
+        await update.message.reply_text(f"Файл '{file_name}' не найден в папке {region_folder}.")
         return
 
     file_path = matching_file['path']
@@ -232,19 +361,21 @@ async def search_and_send_file(update, context, file_name):
         try:
             file_response = requests.get(download_url)
             if file_response.status_code == 200:
-                file_size = len(file_response.content) / (1024 * 1024)  # Размер в МБ
+                file_size = len(file_response.content) / (1024 * 1024)
                 if file_size > 20:
-                    await update.message.reply_text("Файл слишком большой (>20 МБ). Telegram не позволяет отправлять такие файлы.")
+                    await update.message.reply_text(
+                        "Файл слишком большой (>20 МБ). Telegram не позволяет отправлять такие файлы.")
                     logger.error(f"Файл {file_name} слишком большой: {file_size} МБ")
                     return
                 await update.message.reply_document(
                     document=InputFile(file_response.content, filename=file_name),
-                    caption=f"Файл {file_name} из {FIXED_FOLDER}"
+                    caption=f"Файл {file_name} из {region_folder}"
                 )
                 logger.info(f"Файл {file_name} успешно отправлен пользователю {update.effective_user.id}")
             else:
                 await update.message.reply_text("Не удалось загрузить файл с Яндекс.Диска.")
-                logger.error(f"Ошибка загрузки файла {file_path}: код {file_response.status_code}, текст: {file_response.text}")
+                logger.error(
+                    f"Ошибка загрузки файла {file_path}: код {file_response.status_code}, текст: {file_response.text}")
         except Exception as e:
             await update.message.reply_text(f"Ошибка при отправке файла: {str(e)}")
             logger.error(f"Ошибка при отправке файла {file_path}: {str(e)}")
@@ -252,7 +383,7 @@ async def search_and_send_file(update, context, file_name):
         await update.message.reply_text("Файл не найден на Яндекс.Диске или произошла ошибка.")
         logger.error(f"Файл {file_path} не найден на Яндекс.Диске.")
 
-# Новый обработчик для документов (только для админов в состоянии awaiting_upload)
+
 async def handle_document(update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in ALLOWED_ADMINS:
@@ -269,17 +400,22 @@ async def handle_document(update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Поддерживаются только файлы .pdf, .doc, .docx.")
         return
 
-    file_size = document.file_size / (1024 * 1024)  # Размер в МБ
-    if file_size > 50:  # Лимит Яндекс.Диска для простоты
+    file_size = document.file_size / (1024 * 1024)
+    if file_size > 50:
         await update.message.reply_text("Файл слишком большой (>50 МБ).")
         return
+
+    profile = USER_PROFILES.get(user_id)
+    if not profile or "region" not in profile:
+        await update.message.reply_text("Ошибка: у вас не определён регион. Обновите профиль с /start.")
+        return
+    region_folder = f"/regions/{profile['region']}/"
 
     try:
         file = await context.bot.get_file(document.file_id)
         file_content = await file.download_as_bytearray()
-
-        if upload_to_yandex_disk(file_content, file_name):
-            await update.message.reply_text(f"Файл '{file_name}' успешно загружен в {FIXED_FOLDER} на Яндекс.Диск!")
+        if upload_to_yandex_disk(file_content, file_name, region_folder):
+            await update.message.reply_text(f"Файл '{file_name}' успешно загружен в {region_folder} на Яндекс.Диск!")
         else:
             await update.message.reply_text("Ошибка при загрузке файла на Яндекс.Диск.")
     except Exception as e:
@@ -287,7 +423,8 @@ async def handle_document(update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка обработки документа от {user_id}: {str(e)}")
 
     context.user_data.pop('awaiting_upload', None)
-    logger.info(f"Администратор {user_id} загрузил файл {file_name}.")
+    logger.info(f"Администратор {user_id} загрузил файл {file_name} в {region_folder}.")
+
 
 async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -300,27 +437,82 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Пользователь {user_id} попытался отправить сообщение, но не в списке разрешённых.")
         return
 
-    # Обновлённая клавиатура: добавлена кнопка "Загрузить файл" только для админов
-    admin_keyboard = [['Управление пользователями', 'Скачать файл', 'Загрузить файл']] if user_id in ALLOWED_ADMINS else [['Скачать файл']]
+    if user_id not in USER_PROFILES:
+        if context.user_data.get("awaiting_fio", False):
+            USER_PROFILES[user_id] = {"fio": user_input, "name": None, "region": None}
+            save_user_profiles(USER_PROFILES)
+            context.user_data["awaiting_fio"] = False
+            context.user_data["awaiting_federal_district"] = True
+            keyboard = [[district] for district in FEDERAL_DISTRICTS.keys()]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+            await update.message.reply_text("Выберите федеральный округ:", reply_markup=reply_markup)
+            return
+        else:
+            await update.message.reply_text("Сначала пройдите регистрацию с /start.")
+            return
+
+    admin_keyboard = [
+        ['Управление пользователями', 'Скачать файл', 'Загрузить файл']] if user_id in ALLOWED_ADMINS else [
+        ['Скачать файл']]
     default_reply_markup = ReplyKeyboardMarkup(admin_keyboard, resize_keyboard=True)
+
+    if context.user_data.get("awaiting_federal_district", False):
+        if user_input in FEDERAL_DISTRICTS:
+            context.user_data["selected_federal_district"] = user_input
+            context.user_data["awaiting_federal_district"] = False
+            context.user_data["awaiting_region"] = True
+            regions = FEDERAL_DISTRICTS[user_input]
+            keyboard = [[region] for region in regions]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+            await update.message.reply_text("Выберите регион:", reply_markup=reply_markup)
+            return
+        else:
+            await update.message.reply_text("Пожалуйста, выберите из предложенных округов.")
+            return
+
+    if context.user_data.get("awaiting_region", False):
+        selected_district = context.user_data.get("selected_federal_district")
+        regions = FEDERAL_DISTRICTS.get(selected_district, [])
+        if user_input in regions:
+            USER_PROFILES[user_id]["region"] = user_input
+            save_user_profiles(USER_PROFILES)
+            region_folder = f"/regions/{user_input}/"
+            create_yandex_folder(region_folder)
+            context.user_data.pop("awaiting_region", None)
+            context.user_data.pop("selected_federal_district", None)
+            context.user_data["awaiting_name"] = True
+            await update.message.reply_text("Как я могу к Вам обращаться (кратко для удобства)?",
+                                            reply_markup=ReplyKeyboardRemove())
+            logger.info(f"Пользователь {user_id} зарегистрирован с регионом {user_input}.")
+            return
+        else:
+            await update.message.reply_text("Пожалуйста, выберите из предложенных регионов.")
+            return
+
+    if context.user_data.get("awaiting_name", False):
+        profile = USER_PROFILES[user_id]
+        profile["name"] = user_input
+        save_user_profiles(USER_PROFILES)
+        context.user_data["awaiting_name"] = False
+        await show_main_menu(update, context)
+        reply_markup = context.user_data.get('default_reply_markup', ReplyKeyboardRemove())
+        await update.message.reply_text(
+            f"Рад знакомству, {user_input}! Задавай свои вопросы или просто напиши имя файла для скачивания (например, file.pdf).",
+            reply_markup=reply_markup
+        )
+        logger.info(f"Имя пользователя {chat_id} сохранено: {user_input}")
+        return
 
     if user_input.lower().endswith(('.pdf', '.doc', '.docx')):
         await search_and_send_file(update, context, user_input)
-        return
-
-    if context.user_data.get("awaiting_name", False):
-        histories[chat_id]["name"] = user_input
-        context.user_data["awaiting_name"] = False
-        await update.message.reply_text(f"Рад знакомству, {user_input}! Задавай свои вопросы или просто напиши имя файла для скачивания (например, file.pdf).",
-                                        reply_markup=default_reply_markup)
-        logger.info(f"Имя пользователя {chat_id} сохранено: {user_input}")
         return
 
     if user_input == "Управление пользователями":
         if user_id not in ALLOWED_ADMINS:
             await update.message.reply_text("Извините, только администраторы могут управлять пользователями.",
                                             reply_markup=default_reply_markup)
-            logger.info(f"Пользователь {user_id} попытался использовать управление пользователями, но не является администратором.")
+            logger.info(
+                f"Пользователь {user_id} попытался использовать управление пользователями, но не является администратором.")
             return
         keyboard = [
             ['Добавить пользователя', 'Добавить администратора'],
@@ -333,26 +525,34 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if user_input == "Скачать файл":
-        await update.message.reply_text("Укажите название файла (например, file.pdf). Я поищу его в папке /documents/.",
-                                        reply_markup=default_reply_markup)
+        await update.message.reply_text(
+            "Укажите название файла (например, file.pdf). Я поищу его в вашей региональной папке.",
+            reply_markup=default_reply_markup)
         logger.info(f"Пользователь {user_id} запросил скачивание файла.")
         return
 
-    # Новый обработчик для кнопки "Загрузить файл" (только для админов)
     if user_input == "Загрузить файл":
         if user_id not in ALLOWED_ADMINS:
             await update.message.reply_text("Извините, только администраторы могут загружать файлы.",
                                             reply_markup=default_reply_markup)
             logger.info(f"Пользователь {user_id} попытался загрузить файл, но не является администратором.")
             return
-        await update.message.reply_text("Отправьте файл (.pdf, .doc, .docx) для загрузки в /documents/ на Яндекс.Диск.",
-                                        reply_markup=default_reply_markup)
+        profile = USER_PROFILES.get(user_id)
+        if not profile or "region" not in profile:
+            await update.message.reply_text("Ошибка: у вас не определён регион. Обновите профиль с /start.")
+            return
+        await update.message.reply_text(
+            f"Отправьте файл (.pdf, .doc, .docx) для загрузки в /regions/{profile['region']}/ на Яндекс.Диск.",
+            reply_markup=default_reply_markup)
         context.user_data['awaiting_upload'] = True
         logger.info(f"Администратор {user_id} начал процесс загрузки файла.")
         return
 
     if user_input == "Назад":
-        await update.message.reply_text("Возвращение в главное меню.", reply_markup=default_reply_markup)
+        await show_main_menu(update, context)
+        await update.message.reply_text("Главное меню. Выберите действие.",
+                                        reply_markup=context.user_data.get('default_reply_markup',
+                                                                           ReplyKeyboardRemove()))
         logger.info(f"Пользователь {user_id} вернулся в главное меню.")
         return
 
@@ -414,7 +614,8 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
         if user_id not in ALLOWED_ADMINS:
             await update.message.reply_text("Извините, только администраторы могут просматривать список пользователей.",
                                             reply_markup=default_reply_markup)
-            logger.info(f"Пользователь {user_id} попытался просмотреть список пользователей, но не является администратором.")
+            logger.info(
+                f"Пользователь {user_id} попытался просмотреть список пользователей, но не является администратором.")
             return
         if not ALLOWED_USERS:
             await update.message.reply_text("Список разрешённых пользователей пуст.", reply_markup=default_reply_markup)
@@ -426,9 +627,11 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
 
     if user_input == "Список администраторов":
         if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text("Извините, только администраторы могут просматривать список администраторов.",
-                                            reply_markup=default_reply_markup)
-            logger.info(f"Пользователь {user_id} попытался просмотреть список администраторов, но не является администратором.")
+            await update.message.reply_text(
+                "Извините, только администраторы могут просматривать список администраторов.",
+                reply_markup=default_reply_markup)
+            logger.info(
+                f"Пользователь {user_id} попытался просмотреть список администраторов, но не является администратором.")
             return
         if not ALLOWED_ADMINS:
             await update.message.reply_text("Список администраторов пуст.", reply_markup=default_reply_markup)
@@ -438,10 +641,9 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Администратор {user_id} запросил список администраторов.")
         return
 
-    # Проверка QA-базы перед обработкой через HF
     qa_match = find_qa_match(user_input, qa_database)
     if qa_match:
-        user_name = histories.get(chat_id, {}).get("name", "Друг")
+        user_name = USER_PROFILES.get(user_id, {}).get("name", "Друг")
         final_response = f"{user_name}, {qa_match}"
         await update.message.reply_text(final_response, reply_markup=default_reply_markup)
         logger.info(f"Ответ из QA-базы для запроса: {user_input}")
@@ -477,15 +679,17 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка при вызове модели: {str(e)}")
         response_text = f"Извините, произошла ошибка: {str(e)}"
 
-    user_name = histories[chat_id]["name"] or "Друг"
+    user_name = USER_PROFILES.get(user_id, {}).get("name", "Друг")
     final_response = f"{user_name}, {response_text}"
     histories[chat_id]["messages"].append({"role": "assistant", "content": response_text})
     await update.message.reply_text(final_response, reply_markup=default_reply_markup)
+
 
 async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Update {update} caused error {context.error}")
     if update and update.message:
         await update.message.reply_text("Произошла ошибка, попробуйте позже.")
+
 
 def main():
     logger.info("Запуск Telegram бота...")
@@ -494,12 +698,12 @@ def main():
         app.add_handler(CommandHandler("start", send_welcome))
         app.add_handler(CommandHandler("getfile", get_file))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        # Новый handler для документов
         app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
         app.add_error_handler(error_handler)
         app.run_polling()
     except Exception as e:
         logger.error(f"Ошибка при запуске бота: {str(e)}")
+
 
 if __name__ == "__main__":
     main()
