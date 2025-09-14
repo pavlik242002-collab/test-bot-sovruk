@@ -70,7 +70,6 @@ FEDERAL_DISTRICTS = {
     ]
 }
 
-
 def load_allowed_admins():
     try:
         with open('allowed_admins.json', 'r') as f:
@@ -78,14 +77,11 @@ def load_allowed_admins():
     except FileNotFoundError:
         return [123456789]  # Замените на ваш user_id
 
-
 def save_allowed_admins(allowed_admins):
     with open('allowed_admins.json', 'w') as f:
         json.dump(allowed_admins, f, ensure_ascii=False)
 
-
 ALLOWED_ADMINS = load_allowed_admins()
-
 
 def load_allowed_users():
     try:
@@ -94,14 +90,11 @@ def load_allowed_users():
     except FileNotFoundError:
         return []
 
-
 def save_allowed_users(allowed_users):
     with open('allowed_users.json', 'w') as f:
         json.dump(allowed_users, f, ensure_ascii=False)
 
-
 ALLOWED_USERS = load_allowed_users()
-
 
 def load_user_profiles():
     try:
@@ -110,14 +103,11 @@ def load_user_profiles():
     except FileNotFoundError:
         return {}
 
-
 def save_user_profiles(profiles):
     with open('user_profiles.json', 'w', encoding='utf-8') as f:
         json.dump(profiles, f, ensure_ascii=False, indent=2)
 
-
 USER_PROFILES = load_user_profiles()
-
 
 def load_qa_database():
     try:
@@ -130,7 +120,6 @@ def load_qa_database():
         logger.error(f"Ошибка чтения qa_database.json: {str(e)}")
         return {}
 
-
 def find_qa_match(user_input, qa_db):
     user_lower = user_input.lower()
     for question, answers in qa_db.items():
@@ -141,7 +130,6 @@ def find_qa_match(user_input, qa_db):
             return random.choice(answers)
     return None
 
-
 system_prompt = """
 Вы — полезный чат-бот, который логически анализирует всю историю переписки, чтобы давать последовательные ответы.
 Если вопрос пользователя требует актуальной информации или данных, которых у вас нет, используйте функцию web_search для поиска в интернете.
@@ -151,7 +139,6 @@ system_prompt = """
 
 histories = {}
 qa_database = load_qa_database()
-
 
 def create_yandex_folder(folder_path):
     root_folder = '/regions'
@@ -183,7 +170,6 @@ def create_yandex_folder(folder_path):
         logger.error(f"Ошибка при создании папки {folder_path}: {str(e)}")
         return False
 
-
 def list_yandex_disk_files(folder_path):
     url = f'https://cloud-api.yandex.net/v1/disk/resources?path={folder_path}&fields=items.name,items.type,items.path&limit=100'
     headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
@@ -199,7 +185,6 @@ def list_yandex_disk_files(folder_path):
         logger.error(f"Ошибка при запросе списка файлов: {str(e)}")
         return []
 
-
 def get_yandex_disk_file(file_path):
     url = f'https://cloud-api.yandex.net/v1/disk/resources/download?path={file_path}'
     headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
@@ -213,7 +198,6 @@ def get_yandex_disk_file(file_path):
     except Exception as e:
         logger.error(f"Ошибка при запросе к Яндекс.Диску: {str(e)}")
         return None
-
 
 def upload_to_yandex_disk(file_content, file_name, folder_path):
     file_path = folder_path + file_name
@@ -242,7 +226,6 @@ def upload_to_yandex_disk(file_content, file_name, folder_path):
         logger.error(f"Ошибка при загрузке на Яндекс.Диск: {str(e)}")
         return False
 
-
 def web_search(query):
     cache_file = 'search_cache.json'
     try:
@@ -265,7 +248,6 @@ def web_search(query):
     except Exception as e:
         logger.error(f"Ошибка при поиске в интернете: {str(e)}")
         return json.dumps({"error": "Не удалось выполнить поиск."}, ensure_ascii=False)
-
 
 async def send_welcome(update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -298,18 +280,16 @@ async def send_welcome(update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await show_main_menu(update, context)
 
-
 async def show_main_menu(update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     admin_keyboard = [
         ['Управление пользователями', 'Скачать файл', 'Загрузить файл', 'Список всех файлов']
     ] if user_id in ALLOWED_ADMINS else [
-        ['Скачать файл', 'Список всех файлов']
+        ['Скачать файл', 'Загрузить файл', 'Список всех файлов']
     ]
     reply_markup = ReplyKeyboardMarkup(admin_keyboard, resize_keyboard=True)
     context.user_data['default_reply_markup'] = reply_markup
     # Клавиатура отображается без текста
-
 
 async def get_file(update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -331,7 +311,6 @@ async def get_file(update, context: ContextTypes.DEFAULT_TYPE):
 
     file_name = ' '.join(context.args).strip()
     await search_and_send_file(update, context, file_name)
-
 
 async def search_and_send_file(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str):
     user_id = update.effective_user.id
@@ -383,13 +362,8 @@ async def search_and_send_file(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"Ошибка при отправке файла: {str(e)}")
         logger.error(f"Ошибка при отправке файла {file_path}: {str(e)}")
 
-
 async def handle_document(update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id not in ALLOWED_ADMINS:
-        logger.info(f"Пользователь {user_id} отправил документ, но не является администратором.")
-        return
-
     if not context.user_data.get('awaiting_upload', False):
         await update.message.reply_text("Пожалуйста, используйте кнопку 'Загрузить файл' перед отправкой документа.")
         return
@@ -423,8 +397,7 @@ async def handle_document(update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка обработки документа от {user_id}: {str(e)}")
 
     context.user_data.pop('awaiting_upload', None)
-    logger.info(f"Администратор {user_id} загрузил файл {file_name} в {region_folder}.")
-
+    logger.info(f"Пользователь {user_id} загрузил файл {file_name} в {region_folder}.")
 
 async def show_file_list(update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -463,7 +436,6 @@ async def show_file_list(update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
     logger.info(f"Пользователь {user_id} запросил список файлов в {region_folder}.")
-
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -520,7 +492,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             await query.message.reply_text(f"Ошибка при отправке файла: {str(e)}")
             logger.error(f"Ошибка при отправке файла {file_path}: {str(e)}")
 
-
 async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
@@ -549,7 +520,7 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
     admin_keyboard = [
         ['Управление пользователями', 'Скачать файл', 'Загрузить файл', 'Список всех файлов']
     ] if user_id in ALLOWED_ADMINS else [
-        ['Скачать файл', 'Список всех файлов']
+        ['Скачать файл', 'Загрузить файл', 'Список всех файлов']
     ]
     default_reply_markup = ReplyKeyboardMarkup(admin_keyboard, resize_keyboard=True)
 
@@ -633,11 +604,6 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if user_input == "Загрузить файл":
-        if user_id not in ALLOWED_ADMINS:
-            await update.message.reply_text("Извините, только администраторы могут загружать файлы.",
-                                           reply_markup=default_reply_markup)
-            logger.info(f"Пользователь {user_id} попытался загрузить файл, но не является администратором.")
-            return
         profile = USER_PROFILES.get(user_id)
         if not profile or "region" not in profile:
             await update.message.reply_text("Ошибка: у вас не определён регион. Обновите профиль с /start.")
@@ -647,7 +613,7 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=default_reply_markup
         )
         context.user_data['awaiting_upload'] = True
-        logger.info(f"Администратор {user_id} начал процесс загрузки файла.")
+        logger.info(f"Пользователь {user_id} начал процесс загрузки файла.")
         return
 
     if user_input == "Назад":
@@ -782,12 +748,10 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
     histories[chat_id]["messages"].append({"role": "assistant", "content": response_text})
     await update.message.reply_text(final_response, reply_markup=default_reply_markup)
 
-
 async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Update {update} caused error {context.error}")
     if update and update.message:
         await update.message.reply_text("Произошла ошибка, попробуйте позже.")
-
 
 def main():
     logger.info("Запуск Telegram бота...")
@@ -802,7 +766,6 @@ def main():
         app.run_polling()
     except Exception as e:
         logger.error(f"Ошибка при запуске бота: {str(e)}")
-
 
 if __name__ == "__main__":
     main()
