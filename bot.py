@@ -9,6 +9,7 @@ from duckduckgo_search import DDGS
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton, Update
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram import InputFile
+from urllib.parse import quote
 
 logging.basicConfig(
     level=logging.INFO,
@@ -142,7 +143,7 @@ qa_database = load_qa_database()
 
 def create_yandex_folder(folder_path):
     root_folder = '/regions'
-    url = f'https://cloud-api.yandex.net/v1/disk/resources?path={root_folder}'
+    url = f'https://cloud-api.yandex.net/v1/disk/resources?path={quote(root_folder)}'
     headers = {'Authorization': f'OAuth {YANDEX_TOKEN}', 'Content-Type': 'application/json'}
     try:
         response = requests.get(url, headers=headers)
@@ -154,7 +155,7 @@ def create_yandex_folder(folder_path):
                 return False
             logger.info(f"Корневая папка {root_folder} успешно создана.")
 
-        url = f'https://cloud-api.yandex.net/v1/disk/resources?path={folder_path}'
+        url = f'https://cloud-api.yandex.net/v1/disk/resources?path={quote(folder_path)}'
         response = requests.get(url, headers=headers)
         if response.status_code == 200:
             logger.info(f"Папка {folder_path} уже существует.")
@@ -171,7 +172,7 @@ def create_yandex_folder(folder_path):
         return False
 
 def list_yandex_disk_files(folder_path):
-    url = f'https://cloud-api.yandex.net/v1/disk/resources?path={folder_path}&fields=items.name,items.type,items.path&limit=100'
+    url = f'https://cloud-api.yandex.net/v1/disk/resources?path={quote(folder_path)}&fields=items.name,items.type,items.path&limit=100'
     headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
     try:
         response = requests.get(url, headers=headers)
@@ -186,7 +187,7 @@ def list_yandex_disk_files(folder_path):
         return []
 
 def get_yandex_disk_file(file_path):
-    url = f'https://cloud-api.yandex.net/v1/disk/resources/download?path={file_path}'
+    url = f'https://cloud-api.yandex.net/v1/disk/resources/download?path={quote(file_path)}'
     headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
     try:
         response = requests.get(url, headers=headers)
@@ -201,7 +202,7 @@ def get_yandex_disk_file(file_path):
 
 def upload_to_yandex_disk(file_content, file_name, folder_path):
     file_path = folder_path + file_name
-    url = f'https://cloud-api.yandex.net/v1/disk/resources/upload?path={file_path}&overwrite=true'
+    url = f'https://cloud-api.yandex.net/v1/disk/resources/upload?path={quote(file_path)}&overwrite=true'
     headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
     try:
         response = requests.get(url, headers=headers)
@@ -224,6 +225,21 @@ def upload_to_yandex_disk(file_content, file_name, folder_path):
             return False
     except Exception as e:
         logger.error(f"Ошибка при загрузке на Яндекс.Диск: {str(e)}")
+        return False
+
+def delete_yandex_disk_file(file_path):
+    url = f'https://cloud-api.yandex.net/v1/disk/resources?path={quote(file_path)}'
+    headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
+    try:
+        response = requests.delete(url, headers=headers)
+        if response.status_code in (204, 202):
+            logger.info(f"Файл {file_path} успешно удалён с Яндекс.Диска.")
+            return True
+        else:
+            logger.error(f"Ошибка удаления файла {file_path}: код {response.status_code}, текст: {response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"Ошибка при удалении файла {file_path}: {str(e)}")
         return False
 
 def web_search(query):
@@ -258,6 +274,7 @@ async def send_welcome(update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop('awaiting_federal_district', None)
     context.user_data.pop('awaiting_region', None)
     context.user_data.pop('selected_federal_district', None)
+    context.user_data.pop('awaiting_delete', None)
 
     if user_id not in ALLOWED_USERS and user_id not in ALLOWED_ADMINS:
         welcome_message = f"Ваш user_id: {user_id}\nИзвините, у вас нет доступа к этому боту. Передайте ваш user_id администратору для получения доступа."
@@ -399,7 +416,7 @@ async def handle_document(update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop('awaiting_upload', None)
     logger.info(f"Пользователь {user_id} загрузил файл {file_name} в {region_folder}.")
 
-async def show_file_list(update, context: ContextTypes.DEFAULT_TYPE):
+async def show_file_list(update, context: ContextTypes.DEFAULT_TYPE, for_deletion=False):
     user_id = update.effective_user.id
     profile = USER_PROFILES.get(user_id)
     if not profile or "region" not in profile:
@@ -420,7 +437,7 @@ async def show_file_list(update, context: ContextTypes.DEFAULT_TYPE):
     # Создаём инлайн-кнопки для каждого файла
     keyboard = []
     for item in files:
-        callback_data = f"download:{item['name']}"
+        callback_data = f"{'delete' if for_deletion else 'download'}:{item['name']}"
         if len(callback_data.encode('utf-8')) > 64:
             logger.warning(f"callback_data для файла {item['name']} слишком длинное: {len(callback_data.encode('utf-8'))} байт")
             continue
@@ -431,26 +448,28 @@ async def show_file_list(update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Все callback_data для файлов в {region_folder} превышают лимит 64 байта.")
         return
     reply_markup = InlineKeyboardMarkup(keyboard)
+    action_text = "Выберите файл для удаления:" if for_deletion else "Список всех файлов:"
     await update.message.reply_text(
-        "Список всех файлов:",
+        action_text,
         reply_markup=reply_markup
     )
-    logger.info(f"Пользователь {user_id} запросил список файлов в {region_folder}.")
+    logger.info(f"Пользователь {user_id} запросил список файлов в {region_folder} {'для удаления' if for_deletion else 'для просмотра'}.")
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     user_id = update.effective_user.id
+    profile = USER_PROFILES.get(user_id)
+    if not profile or "region" not in profile:
+        await query.message.reply_text("Ошибка: регион не определён. Перезапустите /start.")
+        logger.error(f"Ошибка: регион не определён для пользователя {user_id}.")
+        return
+
+    region_folder = f"/regions/{profile['region']}/"
+
     if query.data.startswith("download:"):
         file_name = query.data.split(":", 1)[1]
-        profile = USER_PROFILES.get(user_id)
-        if not profile or "region" not in profile:
-            await query.message.reply_text("Ошибка: регион не определён. Перезапустите /start.")
-            logger.error(f"Ошибка: регион не определён для пользователя {user_id}.")
-            return
-
-        region_folder = f"/regions/{profile['region']}/"
         if not (file_name.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx'))):
             await query.message.reply_text("Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx.")
             logger.error(f"Неподдерживаемый формат файла {file_name} для пользователя {user_id}.")
@@ -491,6 +510,24 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception as e:
             await query.message.reply_text(f"Ошибка при отправке файла: {str(e)}")
             logger.error(f"Ошибка при отправке файла {file_path}: {str(e)}")
+
+    elif query.data.startswith("delete:"):
+        if user_id not in ALLOWED_ADMINS:
+            await query.message.reply_text("Извините, только администраторы могут удалять файлы.",
+                                          reply_markup=context.user_data.get('default_reply_markup', ReplyKeyboardRemove()))
+            logger.info(f"Пользователь {user_id} попытался удалить файл, но не является администратором.")
+            return
+
+        file_name = query.data.split(":", 1)[1]
+        file_path = f"{region_folder}{file_name}"
+        if delete_yandex_disk_file(file_path):
+            await query.message.reply_text(f"Файл '{file_name}' успешно удалён из папки {region_folder}.",
+                                          reply_markup=context.user_data.get('default_reply_markup', ReplyKeyboardRemove()))
+            logger.info(f"Администратор {user_id} удалил файл {file_name} из {region_folder}")
+        else:
+            await query.message.reply_text(f"Ошибка при удалении файла '{file_name}' с Яндекс.Диска.",
+                                          reply_markup=context.user_data.get('default_reply_markup', ReplyKeyboardRemove()))
+            logger.error(f"Ошибка при удалении файла {file_name} для пользователя {user_id}.")
 
 async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -589,6 +626,7 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             ['Добавить пользователя', 'Добавить администратора'],
             ['Список пользователей', 'Список администраторов'],
+            ['Удалить файл'],
             ['Назад']
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -614,6 +652,16 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
         )
         context.user_data['awaiting_upload'] = True
         logger.info(f"Пользователь {user_id} начал процесс загрузки файла.")
+        return
+
+    if user_input == "Удалить файл":
+        if user_id not in ALLOWED_ADMINS:
+            await update.message.reply_text("Извините, только администраторы могут удалять файлы.",
+                                           reply_markup=default_reply_markup)
+            logger.info(f"Пользователь {user_id} попытался удалить файл, но не является администратором.")
+            return
+        context.user_data['awaiting_delete'] = True
+        await show_file_list(update, context, for_deletion=True)
         return
 
     if user_input == "Назад":
