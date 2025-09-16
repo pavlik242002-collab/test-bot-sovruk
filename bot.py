@@ -1,15 +1,16 @@
 import os
 import json
 import logging
-import requests
 import random
+import openai
+import requests
 from dotenv import load_dotenv
-from huggingface_hub import InferenceClient
 from duckduckgo_search import DDGS
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton, Update
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram import InputFile
 from urllib.parse import quote
+from openai import OpenAI
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,9 +23,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 load_dotenv()
-HF_TOKEN = os.getenv("HF_TOKEN")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 YANDEX_TOKEN = os.getenv("YANDEX_TOKEN")
+XAI_TOKEN = os.getenv("XAI_TOKEN")  # Токен для xAI API
+
+# Инициализация OpenAI клиента для xAI API
+client = OpenAI(
+    base_url="https://api.x.ai/v1",
+    api_key=XAI_TOKEN,
+)
 
 # Словарь федеральных округов и их регионов
 FEDERAL_DISTRICTS = {
@@ -777,19 +784,43 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
 
     messages = histories[chat_id]["messages"]
 
-    try:
-        client = InferenceClient(model="mistralai/Mixtral-8x7B-Instruct-v0.1", token=HF_TOKEN)
-        response = client.chat.completions.create(
-            messages=messages,
-            max_tokens=150,
-            temperature=0.5,
-            top_p=0.8
-        )
-        response_text = response.choices[0].message.content.strip()
-        logger.info(f"Ответ модели: {response_text}")
-    except Exception as e:
-        logger.error(f"Ошибка при вызове модели: {str(e)}")
-        response_text = f"Извините, произошла ошибка: {str(e)}"
+    # Попытка использовать grok-3-mini, с fallback на grok-beta
+    models_to_try = ["grok-3-mini", "grok-beta"]
+    response_text = "Извините, не удалось получить ответ от API. Проверьте подписку на SuperGrok или X Premium+."
+
+    for model in models_to_try:
+        try:
+            completion = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.7,
+                stream=False
+            )
+            response_text = completion.choices[0].message.content.strip()
+            logger.info(f"Ответ модели {model}: {response_text}")
+            break  # Успех — выходим
+        except openai.AuthenticationError as auth_err:
+            logger.error(f"Ошибка авторизации для {model}: {str(auth_err)}")
+            response_text = "Ошибка авторизации: неверный API-ключ. Проверьте XAI_TOKEN."
+            break
+        except openai.APIError as api_err:
+            if "403" in str(api_err):  # Проверяем 403
+                logger.warning(f"403 Forbidden для {model}. Пробуем следующую модель.")
+                continue
+            logger.error(f"Ошибка API для {model}: {str(api_err)}")
+            response_text = f"Ошибка API: {str(api_err)}"
+            break
+        except openai.RateLimitError as rate_err:
+            logger.error(f"Превышен лимит для {model}: {str(rate_err)}")
+            response_text = "Превышен лимит запросов. Попробуйте позже."
+            break
+        except Exception as e:
+            logger.error(f"Неизвестная ошибка для {model}: {str(e)}")
+            response_text = f"Неизвестная ошибка: {str(e)}"
+            break
+    else:
+        logger.error("Все модели недоступны (403). Проверьте токен и подписку.")
+        response_text = "Все модели недоступны (403). Обновите SuperGrok или X Premium+."
 
     user_name = USER_PROFILES.get(user_id, {}).get("name", "Друг")
     final_response = f"{user_name}, {response_text}"
