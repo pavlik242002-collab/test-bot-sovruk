@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import os
 import json
 import logging
 import openai
 import requests
+from typing import Dict, List  # Добавлено для аннотаций типов
 from dotenv import load_dotenv
 from duckduckgo_search import DDGS
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton, Update
@@ -22,19 +25,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Загрузка переменных окружения из файла .env
+# Загрузка переменных окружения из .env
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")  # Токен для Telegram API
 YANDEX_TOKEN = os.getenv("YANDEX_TOKEN")  # Токен для Яндекс.Диска
 XAI_TOKEN = os.getenv("XAI_TOKEN")  # Токен для xAI API
 
-# Инициализация клиента OpenAI для работы с xAI API
+# Проверка токенов (для начинающих: это помогает поймать ошибки сразу)
+if not all([TELEGRAM_TOKEN, YANDEX_TOKEN, XAI_TOKEN]):
+    logger.error("Один или несколько токенов не найдены в .env файле!")
+    raise ValueError("Необходимо указать TELEGRAM_TOKEN, YANDEX_TOKEN и XAI_TOKEN в .env файле.")
+
+# Инициализация клиента OpenAI для xAI API
 client = OpenAI(
     base_url="https://api.x.ai/v1",
     api_key=XAI_TOKEN,
 )
 
-# Словарь федеральных округов и их регионов
+# Словарь федеральных округов и регионов
 FEDERAL_DISTRICTS = {
     "Центральный федеральный округ": [
         "Белгородская область", "Брянская область", "Владимирская область", "Воронежская область",
@@ -79,64 +87,63 @@ FEDERAL_DISTRICTS = {
     ]
 }
 
-# Загрузка списка администраторов из файла
-def load_allowed_admins():
+# Функции для работы с администраторами
+def load_allowed_admins() -> List[int]:
     try:
         with open('allowed_admins.json', 'r') as f:
             return json.load(f)
     except FileNotFoundError:
+        logger.warning("Файл allowed_admins.json не найден, используется ID по умолчанию.")
         return [123456789]  # Замените на ваш user_id
 
-# Сохранение списка администраторов
-def save_allowed_admins(allowed_admins):
+def save_allowed_admins(allowed_admins: List[int]) -> None:
     with open('allowed_admins.json', 'w') as f:
         json.dump(allowed_admins, f, ensure_ascii=False)
 
-ALLOWED_ADMINS = load_allowed_admins()
-
-# Загрузка списка пользователей
-def load_allowed_users():
+# Функции для работы с пользователями
+def load_allowed_users() -> List[int]:
     try:
         with open('allowed_users.json', 'r') as f:
             return json.load(f)
     except FileNotFoundError:
+        logger.warning("Файл allowed_users.json не найден, возвращается пустой список.")
         return []
 
-# Сохранение списка пользователей
-def save_allowed_users(allowed_users):
+def save_allowed_users(allowed_users: List[int]) -> None:
     with open('allowed_users.json', 'w') as f:
         json.dump(allowed_users, f, ensure_ascii=False)
 
-ALLOWED_USERS = load_allowed_users()
-
-# Загрузка профилей пользователей
-def load_user_profiles():
+# Функции для работы с профилями пользователей
+def load_user_profiles() -> Dict[int, Dict[str, str]]:
     try:
         with open('user_profiles.json', 'r', encoding='utf-8') as f:
             return json.load(f)
     except FileNotFoundError:
+        logger.warning("Файл user_profiles.json не найден, возвращается пустой словарь.")
         return {}
 
-# Сохранение профилей пользователей
-def save_user_profiles(profiles):
+def save_user_profiles(profiles: Dict[int, Dict[str, str]]) -> None:
     with open('user_profiles.json', 'w', encoding='utf-8') as f:
         json.dump(profiles, f, ensure_ascii=False, indent=2)
 
+# Инициализация глобальных переменных
+ALLOWED_ADMINS = load_allowed_admins()
+ALLOWED_USERS = load_allowed_users()
 USER_PROFILES = load_user_profiles()
 
 # Системный промпт для AI
 system_prompt = """
 Вы — полезный чат-бот, который логически анализирует всю историю переписки, чтобы давать последовательные ответы.
-Если вопрос пользователя требует актуальной информации или данных, которых у вас нет, используйте функцию web_search для поиска в интернете.
+Используйте предоставленные в истории результаты поиска для актуальной информации. Не упоминать процесс поиска или источники — отвечайте только фактами.
 Всегда учитывайте полный контекст разговора перед ответом.
-Отвечайте кратко и по делу, на русском языке.
+Отвечай кратко и по делу, на русском языке, без лишних объяснений.
 """
 
 # Хранение истории переписки
-histories = {}
+histories: Dict[int, Dict[str, any]] = {}
 
-# Создание папки на Яндекс.Диске
-def create_yandex_folder(folder_path):
+# Функции для работы с Яндекс.Диском
+def create_yandex_folder(folder_path: str) -> bool:
     root_folder = '/regions'
     url = f'https://cloud-api.yandex.net/v1/disk/resources?path={quote(root_folder)}'
     headers = {'Authorization': f'OAuth {YANDEX_TOKEN}', 'Content-Type': 'application/json'}
@@ -145,8 +152,7 @@ def create_yandex_folder(folder_path):
         if response.status_code != 200:
             response = requests.put(url, headers=headers)
             if response.status_code not in (201, 409):
-                logger.error(
-                    f"Ошибка создания корневой папки {root_folder}: код {response.status_code}, текст: {response.text}")
+                logger.error(f"Ошибка создания корневой папки {root_folder}: код {response.status_code}, текст: {response.text}")
                 return False
             logger.info(f"Корневая папка {root_folder} успешно создана.")
 
@@ -166,8 +172,7 @@ def create_yandex_folder(folder_path):
         logger.error(f"Ошибка при создании папки {folder_path}: {str(e)}")
         return False
 
-# Получение списка файлов на Яндекс.Диске
-def list_yandex_disk_files(folder_path):
+def list_yandex_disk_files(folder_path: str) -> List[Dict[str, str]]:
     url = f'https://cloud-api.yandex.net/v1/disk/resources?path={quote(folder_path)}&fields=items.name,items.type,items.path&limit=100'
     headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
     try:
@@ -182,8 +187,7 @@ def list_yandex_disk_files(folder_path):
         logger.error(f"Ошибка при запросе списка файлов: {str(e)}")
         return []
 
-# Получение ссылки на скачивание файла с Яндекс.Диска
-def get_yandex_disk_file(file_path):
+def get_yandex_disk_file(file_path: str) -> str | None:
     url = f'https://cloud-api.yandex.net/v1/disk/resources/download?path={quote(file_path)}'
     headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
     try:
@@ -197,8 +201,7 @@ def get_yandex_disk_file(file_path):
         logger.error(f"Ошибка при запросе к Яндекс.Диску: {str(e)}")
         return None
 
-# Загрузка файла на Яндекс.Диск
-def upload_to_yandex_disk(file_content, file_name, folder_path):
+def upload_to_yandex_disk(file_content: bytes, file_name: str, folder_path: str) -> bool:
     file_path = folder_path + file_name
     url = f'https://cloud-api.yandex.net/v1/disk/resources/upload?path={quote(file_path)}&overwrite=true'
     headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
@@ -212,8 +215,7 @@ def upload_to_yandex_disk(file_content, file_name, folder_path):
                     logger.info(f"Файл {file_name} успешно загружен на Яндекс.Диск в {folder_path}")
                     return True
                 else:
-                    logger.error(
-                        f"Ошибка загрузки на Яндекс.Диск: код {upload_response.status_code}, текст: {upload_response.text}")
+                    logger.error(f"Ошибка загрузки на Яндекс.Диск: код {upload_response.status_code}, текст: {upload_response.text}")
                     return False
             else:
                 logger.error("Не получен URL для загрузки")
@@ -225,8 +227,7 @@ def upload_to_yandex_disk(file_content, file_name, folder_path):
         logger.error(f"Ошибка при загрузке на Яндекс.Диск: {str(e)}")
         return False
 
-# Удаление файла с Яндекс.Диска
-def delete_yandex_disk_file(file_path):
+def delete_yandex_disk_file(file_path: str) -> bool:
     url = f'https://cloud-api.yandex.net/v1/disk/resources?path={quote(file_path)}'
     headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
     try:
@@ -241,11 +242,11 @@ def delete_yandex_disk_file(file_path):
         logger.error(f"Ошибка при удалении файла {file_path}: {str(e)}")
         return False
 
-# Выполнение веб-поиска
-def web_search(query):
+# Функция веб-поиска
+def web_search(query: str) -> str:
     cache_file = 'search_cache.json'
     try:
-        with open('search_cache.json', 'r') as f:
+        with open(cache_file, 'r') as f:
             cache = json.load(f)
     except FileNotFoundError:
         cache = {}
@@ -257,7 +258,7 @@ def web_search(query):
             results = [r for r in ddgs.text(query, max_results=3)]
         search_results = json.dumps(results, ensure_ascii=False, indent=2)
         cache[query] = search_results
-        with open('search_cache.json', 'w') as f:
+        with open(cache_file, 'w') as f:
             json.dump(cache, f, ensure_ascii=False)
         logger.info(f"Поиск выполнен для запроса: {query}")
         return search_results
@@ -266,7 +267,7 @@ def web_search(query):
         return json.dumps({"error": "Не удалось выполнить поиск."}, ensure_ascii=False)
 
 # Обработчик команды /start
-async def send_welcome(update, context: ContextTypes.DEFAULT_TYPE):
+async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
 
@@ -302,7 +303,7 @@ async def send_welcome(update, context: ContextTypes.DEFAULT_TYPE):
         await show_main_menu(update, context)
 
 # Отображение главного меню
-async def show_main_menu(update, context: ContextTypes.DEFAULT_TYPE):
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     admin_keyboard = [
         ['Управление пользователями', 'Скачать файл', 'Загрузить файл', 'Список всех файлов']
@@ -314,7 +315,7 @@ async def show_main_menu(update, context: ContextTypes.DEFAULT_TYPE):
     # Клавиатура отображается без текста
 
 # Обработчик команды /getfile
-async def get_file(update, context: ContextTypes.DEFAULT_TYPE):
+async def get_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
 
@@ -336,7 +337,7 @@ async def get_file(update, context: ContextTypes.DEFAULT_TYPE):
     await search_and_send_file(update, context, file_name)
 
 # Поиск и отправка файла
-async def search_and_send_file(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str):
+async def search_and_send_file(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str) -> None:
     user_id = update.effective_user.id
     profile = USER_PROFILES.get(user_id)
     if not profile or "region" not in profile:
@@ -345,7 +346,7 @@ async def search_and_send_file(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     region_folder = f"/regions/{profile['region']}/"
-    if not (file_name.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx'))):
+    if not file_name.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx')):
         await update.message.reply_text("Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx.")
         logger.error(f"Неподдерживаемый формат файла {file_name} для пользователя {user_id}.")
         return
@@ -380,14 +381,13 @@ async def search_and_send_file(update: Update, context: ContextTypes.DEFAULT_TYP
             logger.info(f"Файл {file_name} успешно отправлен пользователю {user_id} из {region_folder}")
         else:
             await update.message.reply_text("Не удалось загрузить файл с Яндекс.Диска.")
-            logger.error(
-                f"Ошибка загрузки файла {file_path}: код {file_response.status_code}, текст: {file_response.text}")
+            logger.error(f"Ошибка загрузки файла {file_path}: код {file_response.status_code}, текст: {file_response.text}")
     except Exception as e:
         await update.message.reply_text(f"Ошибка при отправке файла: {str(e)}")
         logger.error(f"Ошибка при отправке файла {file_path}: {str(e)}")
 
 # Обработка загруженных документов
-async def handle_document(update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     if not context.user_data.get('awaiting_upload', False):
         await update.message.reply_text("Пожалуйста, используйте кнопку 'Загрузить файл' перед отправкой документа.")
@@ -395,7 +395,7 @@ async def handle_document(update, context: ContextTypes.DEFAULT_TYPE):
 
     document = update.message.document
     file_name = document.file_name
-    if not (file_name.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx'))):
+    if not file_name.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx')):
         await update.message.reply_text("Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx.")
         return
 
@@ -425,7 +425,7 @@ async def handle_document(update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Пользователь {user_id} загрузил файл {file_name} в {region_folder}.")
 
 # Отображение списка файлов
-async def show_file_list(update, context: ContextTypes.DEFAULT_TYPE, for_deletion=False):
+async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for_deletion: bool = False) -> None:
     user_id = update.effective_user.id
     profile = USER_PROFILES.get(user_id)
     if not profile or "region" not in profile:
@@ -464,7 +464,7 @@ async def show_file_list(update, context: ContextTypes.DEFAULT_TYPE, for_deletio
     logger.info(f"Пользователь {user_id} запросил список файлов в {region_folder} {'для удаления' if for_deletion else 'для просмотра'}.")
 
 # Обработка callback-запросов
-async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
 
@@ -479,7 +479,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     if query.data.startswith("download:"):
         file_name = query.data.split(":", 1)[1]
-        if not (file_name.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx'))):
+        if not file_name.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx')):
             await query.message.reply_text("Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx.")
             logger.error(f"Неподдерживаемый формат файла {file_name} для пользователя {user_id}.")
             return
@@ -514,8 +514,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 logger.info(f"Файл {file_name} успешно отправлен пользователю {user_id} из {region_folder}")
             else:
                 await query.message.reply_text("Не удалось загрузить файл с Яндекс.Диска.")
-                logger.error(
-                    f"Ошибка загрузки файла {file_path}: код {file_response.status_code}, текст: {file_response.text}")
+                logger.error(f"Ошибка загрузки файла {file_path}: код {file_response.status_code}, текст: {file_response.text}")
         except Exception as e:
             await query.message.reply_text(f"Ошибка при отправке файла: {str(e)}")
             logger.error(f"Ошибка при отправке файла {file_path}: {str(e)}")
@@ -539,7 +538,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             logger.error(f"Ошибка при удалении файла {file_name} для пользователя {user_id}.")
 
 # Обработчик текстовых сообщений
-async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     user_input = update.message.text.strip()
@@ -629,18 +628,16 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
         await search_and_send_file(update, context, user_input)
         return
 
-    # Обработка команды "Список всех файлов"
+    # Обработка команд меню
     if user_input == "Список всех файлов":
         await show_file_list(update, context)
         return
 
-    # Обработка команды "Управление пользователями"
     if user_input == "Управление пользователями":
         if user_id not in ALLOWED_ADMINS:
             await update.message.reply_text("Извините, только администраторы могут управлять пользователями.",
                                            reply_markup=default_reply_markup)
-            logger.info(
-                f"Пользователь {user_id} попытался использовать управление пользователями, но не является администратором.")
+            logger.info(f"Пользователь {user_id} попытался использовать управление пользователями, но не является администратором.")
             return
         keyboard = [
             ['Добавить пользователя', 'Добавить администратора'],
@@ -653,7 +650,6 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Администратор {user_id} запросил управление пользователями.")
         return
 
-    # Обработка команды "Скачать файл"
     if user_input == "Скачать файл":
         await update.message.reply_text(
             "Укажите название файла (например, file.pdf). Я поищу его в вашей региональной папке.",
@@ -661,7 +657,6 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Пользователь {user_id} запросил скачивание файла.")
         return
 
-    # Обработка команды "Загрузить файл"
     if user_input == "Загрузить файл":
         profile = USER_PROFILES.get(user_id)
         if not profile or "region" not in profile:
@@ -675,7 +670,6 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Пользователь {user_id} начал процесс загрузки файла.")
         return
 
-    # Обработка команды "Удалить файл"
     if user_input == "Удалить файл":
         if user_id not in ALLOWED_ADMINS:
             await update.message.reply_text("Извините, только администраторы могут удалять файлы.",
@@ -686,12 +680,11 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
         await show_file_list(update, context, for_deletion=True)
         return
 
-    # Обработка команды "Назад"
     if user_input == "Назад":
         await show_main_menu(update, context)
         return
 
-    # Обработка ввода user_id для добавления пользователя/администратора
+    # Обработка добавления пользователей/администраторов
     if context.user_data.get('awaiting_user_id'):
         try:
             new_id = int(user_input)
@@ -722,7 +715,6 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Ошибка: Неверный формат user_id от {user_id}.")
             return
 
-    # Обработка команды "Добавить пользователя"
     if user_input == "Добавить пользователя":
         if user_id not in ALLOWED_ADMINS:
             await update.message.reply_text("Извините, только администраторы могут добавлять новых пользователей.",
@@ -735,7 +727,6 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Администратор {user_id} запросил добавление пользователя.")
         return
 
-    # Обработка команды "Добавить администратора"
     if user_input == "Добавить администратора":
         if user_id not in ALLOWED_ADMINS:
             await update.message.reply_text("Извините, только администраторы могут назначать новых администраторов.",
@@ -748,13 +739,11 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Администратор {user_id} запросил добавление администратора.")
         return
 
-    # Обработка команды "Список пользователей"
     if user_input == "Список пользователей":
         if user_id not in ALLOWED_ADMINS:
             await update.message.reply_text("Извините, только администраторы могут просматривать список пользователей.",
                                            reply_markup=default_reply_markup)
-            logger.info(
-                f"Пользователь {user_id} попытался просмотреть список пользователей, но не является администратором.")
+            logger.info(f"Пользователь {user_id} попытался просмотреть список пользователей, но не является администратором.")
             return
         if not ALLOWED_USERS:
             await update.message.reply_text("Список разрешённых пользователей пуст.", reply_markup=default_reply_markup)
@@ -764,14 +753,12 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Администратор {user_id} запросил список разрешённых пользователей.")
         return
 
-    # Обработка команды "Список администраторов"
     if user_input == "Список администраторов":
         if user_id not in ALLOWED_ADMINS:
             await update.message.reply_text(
                 "Извините, только администраторы могут просматривать список администраторов.",
                 reply_markup=default_reply_markup)
-            logger.info(
-                f"Пользователь {user_id} попытался просмотреть список администраторов, но не является администратором.")
+            logger.info(f"Пользователь {user_id} попытался просмотреть список администраторов, но не является администратором.")
             return
         if not ALLOWED_ADMINS:
             await update.message.reply_text("Список администраторов пуст.", reply_markup=default_reply_markup)
@@ -785,21 +772,24 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id not in histories:
         histories[chat_id] = {"name": None, "messages": [{"role": "system", "content": system_prompt}]}
 
+    # Проверка необходимости веб-поиска
+    need_search = any(word in user_input.lower() for word in [
+        "актуальная информация", "последние новости", "найди в интернете", "поиск",
+        "что такое", "информация о", "расскажи о", "найди", "поиск по", "детали о"
+    ])
+
+    if need_search:
+        logger.info(f"Выполняется поиск для запроса: {user_input}")
+        search_results = web_search(user_input)
+        histories[chat_id]["messages"].append({"role": "system", "content": f"Актуальные данные из поиска: {search_results}"})
+
     histories[chat_id]["messages"].append({"role": "user", "content": user_input})
     if len(histories[chat_id]["messages"]) > 20:
         histories[chat_id]["messages"] = histories[chat_id]["messages"][:1] + histories[chat_id]["messages"][-19:]
 
-    # Проверка необходимости веб-поиска
-    need_search = any(word in user_input.lower() for word in
-                      ["актуальная информация", "последние новости", "найди в интернете", "поиск"])
-    if need_search:
-        logger.info(f"Выполняется поиск для запроса: {user_input}")
-        search_results = web_search(user_input)
-        histories[chat_id]["messages"].append({"role": "assistant", "content": f"Результаты поиска: {search_results}"})
-
     messages = histories[chat_id]["messages"]
 
-    # Попытка запроса к API с использованием моделей
+    # Запрос к API
     models_to_try = ["grok-3-mini", "grok-beta"]
     response_text = "Извините, не удалось получить ответ от API. Проверьте подписку на SuperGrok или X Premium+."
 
@@ -843,13 +833,13 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(final_response, reply_markup=default_reply_markup)
 
 # Обработчик ошибок
-async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"Update {update} caused error {context.error}")
     if update and update.message:
         await update.message.reply_text("Произошла ошибка, попробуйте позже.")
 
-# Главная функция для запуска бота
-def main():
+# Главная функция
+def main() -> None:
     logger.info("Запуск Telegram бота...")
     try:
         app = Application.builder().token(TELEGRAM_TOKEN).build()
