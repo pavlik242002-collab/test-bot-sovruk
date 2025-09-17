@@ -254,7 +254,7 @@ def list_yandex_disk_items(folder_path: str, item_type: str = None) -> List[Dict
         return []
 
 def list_yandex_disk_directories(folder_path: str) -> List[str]:
-    """Возвращает список поддиректорий в папке."""
+    """Возвращает список имен поддиректорий в папке."""
     items = list_yandex_disk_items(folder_path, item_type='dir')
     return [item['name'] for item in items]
 
@@ -403,6 +403,8 @@ async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     context.user_data.pop('awaiting_region', None)
     context.user_data.pop('selected_federal_district', None)
     context.user_data.pop('awaiting_delete', None)
+    context.user_data.pop('current_mode', None)
+    context.user_data.pop('current_dir', None)
 
     # Проверка доступа
     if user_id not in ALLOWED_USERS and user_id not in ALLOWED_ADMINS:
@@ -432,12 +434,16 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Показывает главное меню с командами."""
     user_id: int = update.effective_user.id
     admin_keyboard = [
-        ['Управление пользователями', 'Скачать файл', 'Загрузить файл', 'Список всех файлов', 'Документы для РО']
+        ['Управление пользователями', 'Скачать файл', 'Загрузить файл'],
+        ['Список всех файлов', 'Документы для РО']
     ] if user_id in ALLOWED_ADMINS else [
-        ['Скачать файл', 'Загрузить файл', 'Список всех файлов', 'Документы для РО']
+        ['Скачать файл', 'Загрузить файл'],
+        ['Список всех файлов', 'Документы для РО']
     ]
     reply_markup = ReplyKeyboardMarkup(admin_keyboard, resize_keyboard=True)
     context.user_data['default_reply_markup'] = reply_markup
+    context.user_data.pop('current_mode', None)
+    context.user_data.pop('current_dir', None)
     await update.message.reply_text("Выберите действие:", reply_markup=reply_markup)
 
 # Обработчик команды /getfile
@@ -467,9 +473,9 @@ async def get_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     file_name = ' '.join(context.args).strip()
     await search_and_send_file(update, context, file_name)
 
-# Поиск и отправка файла
+# Поиск и отправка файла из региона
 async def search_and_send_file(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str) -> None:
-    """Ищет и отправляет файл с Яндекс.Диска."""
+    """Ищет и отправляет файл с Яндекс.Диска из региональной папки."""
     user_id: int = update.effective_user.id
     profile = USER_PROFILES.get(user_id)
     if not profile or "region" not in profile:
@@ -595,7 +601,7 @@ async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for
 
 # Отображение списка поддиректорий в /documents/
 async def show_documents_dirs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показывает список поддиректорий в /documents/."""
+    """Показывает список поддиректорий в /documents/ как ReplyKeyboard."""
     user_id: int = update.effective_user.id
     documents_folder = "/documents/"
     dirs = list_yandex_disk_directories(documents_folder)
@@ -606,30 +612,22 @@ async def show_documents_dirs(update: Update, context: ContextTypes.DEFAULT_TYPE
         logger.info(f"Папка {documents_folder} пуста для пользователя {user_id}.")
         return
 
-    keyboard = []
-    for dir_name in dirs:
-        callback_data = f"doc_dir:{dir_name}"
-        if len(callback_data.encode('utf-8')) > 64:
-            logger.warning(f"callback_data для директории {dir_name} слишком длинное.")
-            continue
-        keyboard.append([InlineKeyboardButton(dir_name, callback_data=callback_data)])
-    if not keyboard:
-        await update.message.reply_text("Ошибка: имена директорий слишком длинные.",
-                                       reply_markup=context.user_data.get('default_reply_markup', ReplyKeyboardRemove()))
-        return
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Выберите папку в 'Документы для РО':", reply_markup=reply_markup)
+    keyboard = [[dir_name] for dir_name in dirs]
+    keyboard.append(['Назад'])
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    context.user_data['current_mode'] = 'documents_dirs'
+    await update.message.reply_text("Выберите папку:", reply_markup=reply_markup)
     logger.info(f"Пользователь {user_id} запросил список поддиректорий в {documents_folder}.")
 
 # Отображение списка файлов в поддиректории /documents/dir_name/
 async def show_documents_files(update: Update, context: ContextTypes.DEFAULT_TYPE, dir_name: str) -> None:
-    """Показывает список файлов в поддиректории /documents/dir_name/."""
+    """Показывает список файлов в поддиректории /documents/dir_name/ как InlineKeyboard."""
     user_id: int = update.effective_user.id
     sub_folder = f"/documents/{dir_name}/"
     files = list_yandex_disk_files(sub_folder)
 
     if not files:
-        await update.message.reply_text(f"В папке {sub_folder} нет файлов.",
+        await update.message.reply_text(f"В папке {dir_name} нет файлов.",
                                        reply_markup=context.user_data.get('default_reply_markup', ReplyKeyboardRemove()))
         logger.info(f"Папка {sub_folder} пуста для пользователя {user_id}.")
         return
@@ -644,6 +642,7 @@ async def show_documents_files(update: Update, context: ContextTypes.DEFAULT_TYP
     if not keyboard:
         await update.message.reply_text("Ошибка: имена файлов слишком длинные.",
                                        reply_markup=context.user_data.get('default_reply_markup', ReplyKeyboardRemove()))
+        logger.error(f"callback_data для файлов в {sub_folder} превышают лимит 64 байта.")
         return
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(f"Файлы в '{dir_name}':", reply_markup=reply_markup)
@@ -651,7 +650,7 @@ async def show_documents_files(update: Update, context: ContextTypes.DEFAULT_TYP
 
 # Обработка callback-запросов
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработка кнопок для скачивания/удаления файлов, включая documents."""
+    """Обработка кнопок для скачивания/удаления файлов."""
     query = update.callback_query
     await query.answer()
 
@@ -659,15 +658,11 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     profile = USER_PROFILES.get(user_id)
     default_reply_markup = context.user_data.get('default_reply_markup', ReplyKeyboardRemove())
 
-    if query.data.startswith("doc_dir:"):
-        dir_name = query.data.split(":", 1)[1]
-        await show_documents_files(update, context, dir_name)
-        return
-
     if query.data.startswith("doc_download:"):
         parts = query.data.split(":", 2)
         if len(parts) != 3:
             await query.message.reply_text("Ошибка: неверный формат запроса.", reply_markup=default_reply_markup)
+            logger.error(f"Неверный формат callback_data: {query.data}")
             return
         dir_name = parts[1]
         file_name = parts[2]
@@ -691,6 +686,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                     document=InputFile(file_response.content, filename=file_name)
                 )
                 logger.info(f"Файл {file_name} из {sub_folder} отправлен пользователю {user_id}.")
+                # Возвращаем главное меню
+                await show_main_menu(update, context)
             else:
                 await query.message.reply_text("Не удалось загрузить файл с Яндекс.Диска.", reply_markup=default_reply_markup)
                 logger.error(f"Ошибка загрузки файла {file_path}: код {file_response.status_code}")
@@ -699,7 +696,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             logger.error(f"Ошибка при отправке файла {file_path}: {str(e)}")
         return
 
-    # Существующая логика для регионов
+    # Логика для регионов
     if not profile or "region" not in profile:
         await query.message.reply_text("Ошибка: регион не определён. Перезапустите /start.")
         logger.error(f"Ошибка: регион не определён для пользователя {user_id}.")
@@ -808,9 +805,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Определение клавиатуры
     admin_keyboard = [
-        ['Управление пользователями', 'Скачать файл', 'Загрузить файл', 'Список всех файлов', 'Документы для РО']
+        ['Управление пользователями', 'Скачать файл', 'Загрузить файл'],
+        ['Список всех файлов', 'Документы для РО']
     ] if user_id in ALLOWED_ADMINS else [
-        ['Скачать файл', 'Загрузить файл', 'Список всех файлов', 'Документы для РО']
+        ['Скачать файл', 'Загрузить файл'],
+        ['Список всех файлов', 'Документы для РО']
     ]
     default_reply_markup = ReplyKeyboardMarkup(admin_keyboard, resize_keyboard=True)
 
@@ -876,10 +875,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.info(f"Имя пользователя {chat_id} сохранено: {user_input}")
         return
 
-    # Обработка имени файла
-    if user_input.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx')):
-        await search_and_send_file(update, context, user_input)
-        return
+    # Обработка документов для РО
+    if context.user_data.get('current_mode') == 'documents_dirs':
+        documents_folder = "/documents/"
+        dirs = list_yandex_disk_directories(documents_folder)
+        if user_input in dirs:
+            context.user_data['current_dir'] = user_input
+            context.user_data['current_mode'] = 'documents_files'
+            await show_documents_files(update, context, user_input)
+            return
+        elif user_input == "Назад":
+            await show_main_menu(update, context)
+            return
+        else:
+            await update.message.reply_text("Пожалуйста, выберите папку из списка.", reply_markup=default_reply_markup)
+            return
 
     # Обработка команд меню
     if user_input == "Документы для РО":
@@ -1021,6 +1031,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         admins_list = "\n".join([f"ID: {uid}" for uid in ALLOWED_ADMINS])
         await update.message.reply_text(f"Администраторы:\n{admins_list}", reply_markup=default_reply_markup)
         logger.info(f"Администратор {user_id} запросил список администраторов.")
+        return
+
+    # Обработка имени файла из региона
+    if user_input.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx')):
+        await search_and_send_file(update, context, user_input)
         return
 
     # Обработка текстового сообщения через API
