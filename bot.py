@@ -159,7 +159,9 @@ def load_knowledge_base() -> List[str]:
     try:
         with open('knowledge_base.json', 'r', encoding='utf-8') as f:
             data = json.load(f)
-            return data.get('facts', [])
+            facts = data.get('facts', [])
+            logger.info(f"Загружено {len(facts)} фактов из knowledge_base.json")
+            return facts
     except FileNotFoundError:
         logger.warning("Файл knowledge_base.json не найден, создаётся пустой файл.")
         with open('knowledge_base.json', 'w', encoding='utf-8') as f:
@@ -192,7 +194,7 @@ def save_knowledge_base(facts: List[str]) -> None:
         data = {"facts": facts}
         with open('knowledge_base.json', 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-            logger.info("База знаний сохранена.")
+            logger.info(f"База знаний сохранена с {len(facts)} фактами.")
     except Exception as e:
         logger.error(f"Ошибка при сохранении knowledge_base.json: {str(e)}")
 
@@ -207,7 +209,7 @@ system_prompt = """
 Вы — полезный чат-бот, который логически анализирует всю историю переписки, чтобы давать последовательные ответы.
 Обязательно используй актуальные данные из поиска в истории сообщений для ответов на вопросы о фактах, организациях или событиях.
 Если данные из поиска доступны, основывайся только на них и отвечай подробно, но кратко.
-Если данных нет, используй свои знания.
+Если данных нет, используй свои знания и базу знаний, предоставленную системой.
 Не упоминай процесс поиска, источники или фразы вроде "не знаю" или "уточните".
 Всегда учитывай полный контекст разговора.
 Отвечай кратко, по делу, на русском языке, без лишних объяснений.
@@ -1046,12 +1048,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if chat_id not in histories:
         histories[chat_id] = {"name": None, "messages": [{"role": "system", "content": system_prompt}]}
 
-    # Добавляем базу знаний в контекст
+    # Добавляем базу знаний в контекст для всех пользователей
     global KNOWLEDGE_BASE
     if KNOWLEDGE_BASE:
         knowledge_text = "Известные факты для использования в ответах: " + "; ".join(KNOWLEDGE_BASE)
         histories[chat_id]["messages"].insert(1, {"role": "system", "content": knowledge_text})
-        logger.info(f"Добавлены знания в контекст: {len(KNOWLEDGE_BASE)} фактов")
+        logger.info(f"Добавлены знания в контекст для user_id {user_id}: {len(KNOWLEDGE_BASE)} фактов")
 
     # Проверка необходимости веб-поиска
     need_search = any(word in user_input.lower() for word in [
@@ -1093,7 +1095,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 stream=False
             )
             response_text = completion.choices[0].message.content.strip()
-            logger.info(f"Ответ модели {model}: {response_text}")
+            logger.info(f"Ответ модели {model} для user_id {user_id}: {response_text}")
             break
         except openai.AuthenticationError as auth_err:
             logger.error(f"Ошибка авторизации для {model}: {str(auth_err)}")
