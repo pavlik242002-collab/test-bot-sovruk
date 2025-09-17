@@ -42,7 +42,7 @@ client = OpenAI(
     api_key=XAI_TOKEN,
 )
 
-# Словарь федеральных округов (без изменений)
+# Словарь федеральных округов
 FEDERAL_DISTRICTS = {
     "Центральный федеральный округ": [
         "Белгородская область", "Брянская область", "Владимирская область", "Воронежская область",
@@ -202,21 +202,21 @@ ALLOWED_USERS = load_allowed_users()
 USER_PROFILES = load_user_profiles()
 KNOWLEDGE_BASE = load_knowledge_base()
 
-# Системный промпт для ИИ (без изменений)
+# Новый системный промпт для ИИ
 system_prompt = """
 Вы — полезный чат-бот, который логически анализирует всю историю переписки, чтобы давать последовательные ответы.
 Обязательно используй актуальные данные из поиска в истории сообщений для ответов на вопросы о фактах, организациях или событиях.
-Если данные из поиска доступны, основывайся только на них и отвечай подробно, но кратко. Не говори "не знаю" или "уточните" — предоставь информацию на основе данных.
-Если данных нет, используй свои знания, но укажи, что это общая информация.
-Не упоминать процесс поиска или источники — отвечайте только фактами.
-Всегда учитывайте полный контекст разговора перед ответом.
-Отвечай кратко и по делу, на русском языке, без лишних объяснений.
+Если данные из поиска доступны, основывайся только на них и отвечай подробно, но кратко.
+Если данных нет, используй свои знания.
+Не упоминай процесс поиска, источники или фразы вроде "не знаю" или "уточните".
+Всегда учитывай полный контекст разговора.
+Отвечай кратко, по делу, на русском языке, без лишних объяснений.
 """
 
 # Хранение истории переписки
 histories: Dict[int, Dict[str, Any]] = {}
 
-# Функции для работы с Яндекс.Диском (без изменений)
+# Функции для работы с Яндекс.Диском
 def create_yandex_folder(folder_path: str) -> bool:
     """Создаёт папку на Яндекс.Диске."""
     root_folder = '/regions'
@@ -313,7 +313,7 @@ def delete_yandex_disk_file(file_path: str) -> bool:
         logger.error(f"Ошибка при удалении файла {file_path}: {str(e)}")
         return False
 
-# Функция веб-поиска (без изменений)
+# Функция веб-поиска
 def web_search(query: str) -> str:
     """Выполняет поиск в интернете и кэширует результаты."""
     cache_file = 'search_cache.json'
@@ -338,7 +338,7 @@ def web_search(query: str) -> str:
         logger.error(f"Ошибка при поиске: {str(e)}")
         return json.dumps({"error": "Не удалось выполнить поиск."}, ensure_ascii=False)
 
-# Обработчик команды /learn (без изменений)
+# Обработчик команды /learn
 async def handle_learn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка команды /learn для добавления знаний."""
     user_id: int = update.effective_user.id
@@ -357,7 +357,7 @@ async def handle_learn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(f"Факт добавлен: '{fact}'. Теперь бот использует его во всех ответах!")
     logger.info(f"Администратор {user_id} добавил факт: {fact}")
 
-# Новая команда /forget
+# Обработчик команды /forget
 async def handle_forget(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка команды /forget для удаления факта из базы знаний."""
     user_id: int = update.effective_user.id
@@ -381,7 +381,7 @@ async def handle_forget(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text(f"Факт '{fact}' не найден в базе знаний.")
         logger.info(f"Администратор {user_id} пытался удалить несуществующий факт: {fact}")
 
-# Обработчик команды /start (без изменений)
+# Обработчик команды /start
 async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка команды /start: регистрация или главное меню."""
     if update.effective_user is None or update.effective_chat is None:
@@ -423,7 +423,7 @@ async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     else:
         await show_main_menu(update, context)
 
-# Отображение главного меню (без изменений)
+# Отображение главного меню
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывает главное меню с командами."""
     user_id: int = update.effective_user.id
@@ -436,7 +436,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data['default_reply_markup'] = reply_markup
     await update.message.reply_text("Выберите действие:", reply_markup=reply_markup)
 
-# Обработчик команды /getfile (без изменений)
+# Обработчик команды /getfile
 async def get_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка команды /getfile: скачивание файла."""
     if update.effective_user is None or update.effective_chat is None:
@@ -463,7 +463,7 @@ async def get_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     file_name = ' '.join(context.args).strip()
     await search_and_send_file(update, context, file_name)
 
-# Поиск и отправка файла (без изменений)
+# Поиск и отправка файла
 async def search_and_send_file(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str) -> None:
     """Ищет и отправляет файл с Яндекс.Диска."""
     user_id: int = update.effective_user.id
@@ -513,7 +513,7 @@ async def search_and_send_file(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"Ошибка при отправке файла: {str(e)}")
         logger.error(f"Ошибка при отправке файла {file_path}: {str(e)}")
 
-# Обработка загруженных документов (без изменений)
+# Обработка загруженных документов
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка загруженных документов."""
     user_id: int = update.effective_user.id
@@ -552,7 +552,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     context.user_data.pop('awaiting_upload', None)
     logger.info(f"Пользователь {user_id} загрузил файл {file_name} в {region_folder}.")
 
-# Отображение списка файлов (без изменений)
+# Отображение списка файлов
 async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for_deletion: bool = False) -> None:
     """Показывает список файлов в папке региона."""
     user_id: int = update.effective_user.id
@@ -589,7 +589,7 @@ async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for
     await update.message.reply_text(action_text, reply_markup=reply_markup)
     logger.info(f"Пользователь {user_id} запросил список файлов в {region_folder}.")
 
-# Обработка callback-запросов (без изменений)
+# Обработка callback-запросов
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка кнопок для скачивания/удаления файлов."""
     query = update.callback_query
@@ -663,8 +663,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                                           reply_markup=context.user_data.get('default_reply_markup', ReplyKeyboardRemove()))
             logger.error(f"Ошибка при удалении файла {file_name} для пользователя {user_id}.")
 
-# Обработчик текстовых сообщений (без изменений)
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+# Обработчик текстовых сообщений
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, FEDERAL=None) -> None:
     """Обработка текстовых сообщений: регистрация, команды, поиск."""
     if update.effective_user is None or update.effective_chat is None:
         logger.error("Ошибка: update.effective_user или update.effective_chat is None")
@@ -717,7 +717,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             context.user_data["selected_federal_district"] = user_input
             context.user_data["awaiting_federal_district"] = False
             context.user_data["awaiting_region"] = True
-            regions = FEDERAL_DISTRICTS[user_input]
+            regions = FEDERAL_DISTRICTS [user_input]
             keyboard = [[region] for region in regions]
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
             await update.message.reply_text("Выберите регион:", reply_markup=reply_markup)
@@ -997,7 +997,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     histories[chat_id]["messages"].append({"role": "assistant", "content": response_text})
     await update.message.reply_text(final_response, reply_markup=default_reply_markup)
 
-# Обработчик ошибок (без изменений)
+# Обработчик ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка ошибок бота."""
     logger.error(f"Update {update} caused error {context.error}")
@@ -1013,7 +1013,7 @@ def main() -> None:
         app.add_handler(CommandHandler("start", send_welcome))
         app.add_handler(CommandHandler("getfile", get_file))
         app.add_handler(CommandHandler("learn", handle_learn))
-        app.add_handler(CommandHandler("forget", handle_forget))  # Добавляем обработчик для /forget
+        app.add_handler(CommandHandler("forget", handle_forget))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
         app.add_handler(CallbackQueryHandler(handle_callback_query))
