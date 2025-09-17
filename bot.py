@@ -689,9 +689,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 await query.message.reply_document(
                     document=InputFile(file_response.content, filename=file_name)
                 )
-                logger.info(f"Файл {file_name} из {sub_folder} отправлен пользователю {user_id}.")
-                # Возвращаем главное меню
-                await show_main_menu_with_query(query, context)
+                logger.info(f"Файл {file_name} из {sub_folder} отправлен пользователю {user_id} без возврата в меню.")
             else:
                 await query.message.reply_text("Не удалось загрузить файл с Яндекс.Диска.", reply_markup=default_reply_markup)
                 logger.error(f"Ошибка загрузки файла {file_path}: код {file_response.status_code}")
@@ -741,9 +739,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 await query.message.reply_document(
                     document=InputFile(file_response.content, filename=file_name)
                 )
-                logger.info(f"Файл {file_name} отправлен пользователю {user_id}.")
-                # Возвращаем главное меню
-                await show_main_menu_with_query(query, context)
+                logger.info(f"Файл {file_name} отправлен пользователю {user_id} без возврата в меню.")
             else:
                 await query.message.reply_text("Не удалось загрузить файл с Яндекс.Диска.", reply_markup=default_reply_markup)
                 logger.error(f"Ошибка загрузки файла {file_path}: код {file_response.status_code}")
