@@ -434,11 +434,11 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Показывает главное меню с командами."""
     user_id: int = update.effective_user.id
     admin_keyboard = [
-        ['Управление пользователями', 'Скачать файл', 'Загрузить файл'],
-        ['Список всех файлов', 'Документы для РО']
+        ['Управление пользователями', 'Загрузить файл'],
+        ['Архив документов РО', 'Документы для РО']
     ] if user_id in ALLOWED_ADMINS else [
-        ['Скачать файл', 'Загрузить файл'],
-        ['Список всех файлов', 'Документы для РО']
+        ['Загрузить файл'],
+        ['Архив документов РО', 'Документы для РО']
     ]
     reply_markup = ReplyKeyboardMarkup(admin_keyboard, resize_keyboard=True)
     context.user_data['default_reply_markup'] = reply_markup
@@ -645,7 +645,7 @@ async def show_documents_files(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.error(f"callback_data для файлов в {sub_folder} превышают лимит 64 байта.")
         return
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(f"Файлы в '{dir_name}':", reply_markup=reply_markup)
+    await update.message.reply_text(f"Файлы в папке {dir_name}:", reply_markup=reply_markup)
     logger.info(f"Пользователь {user_id} запросил список файлов в {sub_folder}.")
 
 # Обработка callback-запросов
@@ -657,6 +657,10 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     user_id: int = update.effective_user.id
     profile = USER_PROFILES.get(user_id)
     default_reply_markup = context.user_data.get('default_reply_markup', ReplyKeyboardRemove())
+
+    if not query.message:
+        logger.error(f"Ошибка: query.message is None для user_id {user_id}")
+        return
 
     if query.data.startswith("doc_download:"):
         parts = query.data.split(":", 2)
@@ -687,7 +691,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 )
                 logger.info(f"Файл {file_name} из {sub_folder} отправлен пользователю {user_id}.")
                 # Возвращаем главное меню
-                await show_main_menu(update, context)
+                await show_main_menu_with_query(query, context)
             else:
                 await query.message.reply_text("Не удалось загрузить файл с Яндекс.Диска.", reply_markup=default_reply_markup)
                 logger.error(f"Ошибка загрузки файла {file_path}: код {file_response.status_code}")
@@ -698,7 +702,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     # Логика для регионов
     if not profile or "region" not in profile:
-        await query.message.reply_text("Ошибка: регион не определён. Перезапустите /start.")
+        await query.message.reply_text("Ошибка: регион не определён. Перезапустите /start.", reply_markup=default_reply_markup)
         logger.error(f"Ошибка: регион не определён для пользователя {user_id}.")
         return
 
@@ -707,7 +711,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     if query.data.startswith("download:"):
         file_name = query.data.split(":", 1)[1]
         if not file_name.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx')):
-            await query.message.reply_text("Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx.")
+            await query.message.reply_text("Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx.", reply_markup=default_reply_markup)
             logger.error(f"Неподдерживаемый формат файла {file_name} для пользователя {user_id}.")
             return
 
@@ -715,14 +719,14 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         matching_file = next((item for item in files if item['name'].lower() == file_name.lower()), None)
 
         if not matching_file:
-            await query.message.reply_text(f"Файл '{file_name}' не найден в папке {region_folder}.")
+            await query.message.reply_text(f"Файл '{file_name}' не найден в папке {region_folder}.", reply_markup=default_reply_markup)
             logger.info(f"Файл '{file_name}' не найден для пользователя {user_id}.")
             return
 
         file_path = matching_file['path']
         download_url = get_yandex_disk_file(file_path)
         if not download_url:
-            await query.message.reply_text("Ошибка: не удалось получить ссылку для скачивания.")
+            await query.message.reply_text("Ошибка: не удалось получить ссылку для скачивания.", reply_markup=default_reply_markup)
             logger.error(f"Не удалось получить ссылку для файла {file_path}.")
             return
 
@@ -731,39 +735,55 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             if file_response.status_code == 200:
                 file_size = len(file_response.content) / (1024 * 1024)
                 if file_size > 20:
-                    await query.message.reply_text("Файл слишком большой (>20 МБ).")
+                    await query.message.reply_text("Файл слишком большой (>20 МБ).", reply_markup=default_reply_markup)
                     logger.error(f"Файл {file_name} слишком большой: {file_size} МБ")
                     return
                 await query.message.reply_document(
                     document=InputFile(file_response.content, filename=file_name)
                 )
                 logger.info(f"Файл {file_name} отправлен пользователю {user_id}.")
+                # Возвращаем главное меню
+                await show_main_menu_with_query(query, context)
             else:
-                await query.message.reply_text("Не удалось загрузить файл с Яндекс.Диска.")
+                await query.message.reply_text("Не удалось загрузить файл с Яндекс.Диска.", reply_markup=default_reply_markup)
                 logger.error(f"Ошибка загрузки файла {file_path}: код {file_response.status_code}")
         except Exception as e:
-            await query.message.reply_text(f"Ошибка при отправке файла: {str(e)}")
+            await query.message.reply_text(f"Ошибка при отправке файла: {str(e)}", reply_markup=default_reply_markup)
             logger.error(f"Ошибка при отправке файла {file_path}: {str(e)}")
 
     elif query.data.startswith("delete:"):
         if user_id not in ALLOWED_ADMINS:
-            await query.message.reply_text("Только администраторы могут удалять файлы.",
-                                          reply_markup=default_reply_markup)
+            await query.message.reply_text("Только администраторы могут удалять файлы.", reply_markup=default_reply_markup)
             logger.info(f"Пользователь {user_id} попытался удалить файл.")
             return
 
         file_name = query.data.split(":", 1)[1]
         file_path = f"{region_folder}{file_name}"
         if delete_yandex_disk_file(file_path):
-            await query.message.reply_text(f"Файл '{file_name}' удалён из папки {region_folder}.",
-                                          reply_markup=default_reply_markup)
+            await query.message.reply_text(f"Файл '{file_name}' удалён из папки {region_folder}.", reply_markup=default_reply_markup)
             logger.info(f"Администратор {user_id} удалил файл {file_name}.")
         else:
-            await query.message.reply_text(f"Ошибка при удалении файла '{file_name}'.",
-                                          reply_markup=default_reply_markup)
+            await query.message.reply_text(f"Ошибка при удалении файла '{file_name}'.", reply_markup=default_reply_markup)
             logger.error(f"Ошибка при удалении файла {file_name} для пользователя {user_id}.")
 
-# Обработчик текстовых сообщений
+# Вспомогательная функция для отображения главного меню через callback_query
+async def show_main_menu_with_query(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает главное меню через callback_query."""
+    user_id: int = query.from_user.id
+    admin_keyboard = [
+        ['Управление пользователями', 'Загрузить файл'],
+        ['Архив документов РО', 'Документы для РО']
+    ] if user_id in ALLOWED_ADMINS else [
+        ['Загрузить файл'],
+        ['Архив документов РО', 'Документы для РО']
+    ]
+    reply_markup = ReplyKeyboardMarkup(admin_keyboard, resize_keyboard=True)
+    context.user_data['default_reply_markup'] = reply_markup
+    context.user_data.pop('current_mode', None)
+    context.user_data.pop('current_dir', None)
+    await query.message.reply_text("Выберите действие:", reply_markup=reply_markup)
+
+# Обработка текстовых сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка текстовых сообщений: регистрация, команды, поиск."""
     if update.effective_user is None or update.effective_chat is None:
@@ -805,11 +825,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Определение клавиатуры
     admin_keyboard = [
-        ['Управление пользователями', 'Скачать файл', 'Загрузить файл'],
-        ['Список всех файлов', 'Документы для РО']
+        ['Управление пользователями', 'Загрузить файл'],
+        ['Архив документов РО', 'Документы для РО']
     ] if user_id in ALLOWED_ADMINS else [
-        ['Скачать файл', 'Загрузить файл'],
-        ['Список всех файлов', 'Документы для РО']
+        ['Загрузить файл'],
+        ['Архив документов РО', 'Документы для РО']
     ]
     default_reply_markup = ReplyKeyboardMarkup(admin_keyboard, resize_keyboard=True)
 
@@ -869,7 +889,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await show_main_menu(update, context)
         reply_markup = context.user_data.get('default_reply_markup', ReplyKeyboardRemove())
         await update.message.reply_text(
-            f"Рад знакомству, {user_input}! Задавайте вопросы или напишите имя файла (например, file.pdf).",
+            f"Рад знакомству, {user_input}! Задавайте вопросы или используйте меню.",
             reply_markup=reply_markup
         )
         logger.info(f"Имя пользователя {chat_id} сохранено: {user_input}")
@@ -896,7 +916,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await show_documents_dirs(update, context)
         return
 
-    if user_input == "Список всех файлов":
+    if user_input == "Архив документов РО":
         await show_file_list(update, context)
         return
 
@@ -915,13 +935,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         await update.message.reply_text("Выберите действие:", reply_markup=reply_markup)
         logger.info(f"Администратор {user_id} запросил управление пользователями.")
-        return
-
-    if user_input == "Скачать файл":
-        await update.message.reply_text(
-            "Укажите название файла (например, file.pdf).",
-            reply_markup=default_reply_markup)
-        logger.info(f"Пользователь {user_id} запросил скачивание файла.")
         return
 
     if user_input == "Загрузить файл":
@@ -1031,11 +1044,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         admins_list = "\n".join([f"ID: {uid}" for uid in ALLOWED_ADMINS])
         await update.message.reply_text(f"Администраторы:\n{admins_list}", reply_markup=default_reply_markup)
         logger.info(f"Администратор {user_id} запросил список администраторов.")
-        return
-
-    # Обработка имени файла из региона
-    if user_input.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx')):
-        await search_and_send_file(update, context, user_input)
         return
 
     # Обработка текстового сообщения через API
