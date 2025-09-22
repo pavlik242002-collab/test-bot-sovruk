@@ -616,7 +616,7 @@ async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             callback_data = f"doc_download:{idx}"
             keyboard.append([InlineKeyboardButton(item['name'], callback_data=callback_data)])
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(f"Файлы в папке {current_path}:", reply_markup=reply_markup)
+        await update.message.reply_text("Файлы в папке:", reply_markup=reply_markup)
         logger.info(f"Пользователь {user_id} запросил список файлов в {current_path}.")
 
     # Если есть поддиректории, показываем их
@@ -626,7 +626,7 @@ async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             keyboard.append(['Назад'])
         keyboard.append(['В главное меню'])
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        await update.message.reply_text(f"Подпапки в {current_path}:", reply_markup=reply_markup)
+        await update.message.reply_text("Выберите из списка:", reply_markup=reply_markup)
         logger.info(f"Пользователь {user_id} запросил список подпапок в {current_path}.")
     elif not files:
         # Если нет ни файлов, ни папок
