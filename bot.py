@@ -898,37 +898,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.info(f"Имя пользователя {chat_id} сохранено: {user_input}")
         return
 
-    # Обработка навигации по documents
-    if context.user_data.get('current_mode') == 'documents_nav':
-        current_path = context.user_data.get('current_path', '/documents/')
-        dirs = list_yandex_disk_directories(current_path)
-        if user_input in dirs:
-            # Переход в подпапку
-            context.user_data['current_path'] = current_path + user_input + '/'
-            await show_current_docs(update, context)
-            return
-        elif user_input == 'Назад' and current_path != '/documents/':
-            # Возврат на уровень выше
-            parts = current_path.rstrip('/').split('/')
-            new_path = '/'.join(parts[:-1]) + '/' if len(parts) > 2 else '/documents/'
-            context.user_data['current_path'] = new_path
-            await show_current_docs(update, context)
-            return
-        elif user_input == 'В главное меню':
-            await show_main_menu(update, context)
-            return
-        else:
-            await update.message.reply_text("Пожалуйста, выберите из списка.", reply_markup=default_reply_markup)
-            return
-
     # Обработка команд меню
     if user_input == "Документы для РО":
         context.user_data['current_mode'] = 'documents_nav'
         context.user_data['current_path'] = '/documents/'
+        context.user_data.pop('file_list', None)  # Очищаем старый список файлов
         await show_current_docs(update, context)
         return
 
     if user_input == "Архив документов РО":
+        context.user_data.pop('current_mode', None)
+        context.user_data.pop('current_path', None)
+        context.user_data.pop('file_list', None)
         await show_file_list(update, context)
         return
 
@@ -945,6 +926,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             ['Назад']
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        context.user_data.pop('current_mode', None)
+        context.user_data.pop('current_path', None)
+        context.user_data.pop('file_list', None)
         await update.message.reply_text("Выберите действие:", reply_markup=reply_markup)
         logger.info(f"Администратор {user_id} запросил управление пользователями.")
         return
@@ -954,6 +938,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if not profile or "region" not in profile:
             await update.message.reply_text("Ошибка: регион не определён. Обновите профиль с /start.")
             return
+        context.user_data.pop('current_mode', None)
+        context.user_data.pop('current_path', None)
+        context.user_data.pop('file_list', None)
         await update.message.reply_text(
             "Отправьте файл для загрузки.",
             reply_markup=default_reply_markup
@@ -969,12 +956,40 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.info(f"Пользователь {user_id} попытался удалить файл.")
             return
         context.user_data['awaiting_delete'] = True
+        context.user_data.pop('current_mode', None)
+        context.user_data.pop('current_path', None)
+        context.user_data.pop('file_list', None)
         await show_file_list(update, context, for_deletion=True)
         return
 
     if user_input == "Назад":
         await show_main_menu(update, context)
         return
+
+    # Обработка навигации по documents
+    if context.user_data.get('current_mode') == 'documents_nav':
+        current_path = context.user_data.get('current_path', '/documents/')
+        dirs = list_yandex_disk_directories(current_path)
+        if user_input in dirs:
+            # Переход в подпапку
+            context.user_data['current_path'] = current_path + user_input + '/'
+            context.user_data.pop('file_list', None)  # Очищаем старый список файлов
+            await show_current_docs(update, context)
+            return
+        elif user_input == 'В главное меню':
+            await show_main_menu(update, context)
+            return
+        elif user_input == 'Назад' and current_path != '/documents/':
+            # Возврат на уровень выше
+            parts = current_path.rstrip('/').split('/')
+            new_path = '/'.join(parts[:-1]) + '/' if len(parts) > 2 else '/documents/'
+            context.user_data['current_path'] = new_path
+            context.user_data.pop('file_list', None)  # Очищаем старый список файлов
+            await show_current_docs(update, context)
+            return
+        else:
+            await update.message.reply_text("Пожалуйста, выберите из списка.", reply_markup=default_reply_markup)
+            return
 
     if context.user_data.get('awaiting_user_id'):
         try:
