@@ -408,6 +408,7 @@ async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     context.user_data.pop('current_mode', None)
     context.user_data.pop('current_dir', None)
     context.user_data.pop('file_list', None)
+    context.user_data.pop('current_path', None)
 
     # Проверка доступа
     if user_id not in ALLOWED_USERS and user_id not in ALLOWED_ADMINS:
@@ -448,6 +449,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data.pop('current_mode', None)
     context.user_data.pop('current_dir', None)
     context.user_data.pop('file_list', None)
+    context.user_data.pop('current_path', None)
     await update.message.reply_text("Выберите действие:", reply_markup=reply_markup)
 
 # Обработчик команды /getfile
@@ -598,48 +600,42 @@ async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for
     await update.message.reply_text(action_text, reply_markup=reply_markup)
     logger.info(f"Пользователь {user_id} запросил список файлов в {region_folder}.")
 
-# Отображение списка поддиректорий в /documents/
-async def show_documents_dirs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показывает список поддиректорий в /documents/ как ReplyKeyboard."""
+# Отображение содержимого текущей папки в /documents/
+async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает файлы и/или поддиректории в текущей папке в /documents/."""
     user_id: int = update.effective_user.id
-    documents_folder = "/documents/"
-    dirs = list_yandex_disk_directories(documents_folder)
+    current_path = context.user_data.get('current_path', '/documents/')
+    files = list_yandex_disk_files(current_path)
+    dirs = list_yandex_disk_directories(current_path)
 
-    if not dirs:
-        await update.message.reply_text(f"В папке {documents_folder} нет поддиректорий.",
-                                       reply_markup=context.user_data.get('default_reply_markup', ReplyKeyboardRemove()))
-        logger.info(f"Папка {documents_folder} пуста для пользователя {user_id}.")
-        return
+    # Если есть файлы, показываем их
+    if files:
+        context.user_data['file_list'] = files
+        keyboard = []
+        for idx, item in enumerate(files):
+            callback_data = f"doc_download:{idx}"
+            keyboard.append([InlineKeyboardButton(item['name'], callback_data=callback_data)])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(f"Файлы в папке {current_path}:", reply_markup=reply_markup)
+        logger.info(f"Пользователь {user_id} запросил список файлов в {current_path}.")
 
-    keyboard = [[dir_name] for dir_name in dirs]
-    keyboard.append(['Назад'])
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    context.user_data['current_mode'] = 'documents_dirs'
-    await update.message.reply_text("Выберите папку:", reply_markup=reply_markup)
-    logger.info(f"Пользователь {user_id} запросил список поддиректорий в {documents_folder}.")
-
-# Отображение списка файлов в поддиректории /documents/dir_name/
-async def show_documents_files(update: Update, context: ContextTypes.DEFAULT_TYPE, dir_name: str) -> None:
-    """Показывает список файлов в поддиректории /documents/dir_name/ как InlineKeyboard."""
-    user_id: int = update.effective_user.id
-    sub_folder = f"/documents/{dir_name}/"
-    files = list_yandex_disk_files(sub_folder)
-
-    if not files:
-        await update.message.reply_text(f"В папке {dir_name} нет файлов.",
-                                       reply_markup=context.user_data.get('default_reply_markup', ReplyKeyboardRemove()))
-        logger.info(f"Папка {sub_folder} пуста для пользователя {user_id}.")
-        return
-
-    # Сохраняем список файлов в context.user_data
-    context.user_data['file_list'] = files
-    keyboard = []
-    for idx, item in enumerate(files):
-        callback_data = f"doc_download:{dir_name}:{idx}"
-        keyboard.append([InlineKeyboardButton(item['name'], callback_data=callback_data)])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(f"Файлы в папке {dir_name}:", reply_markup=reply_markup)
-    logger.info(f"Пользователь {user_id} запросил список файлов в {sub_folder}.")
+    # Если есть поддиректории, показываем их
+    if dirs:
+        keyboard = [[dir_name] for dir_name in dirs]
+        if current_path != '/documents/':
+            keyboard.append(['Назад'])
+        keyboard.append(['В главное меню'])
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await update.message.reply_text(f"Подпапки в {current_path}:", reply_markup=reply_markup)
+        logger.info(f"Пользователь {user_id} запросил список подпапок в {current_path}.")
+    elif not files:
+        # Если нет ни файлов, ни папок
+        keyboard = [['В главное меню']]
+        if current_path != '/documents/':
+            keyboard.insert(0, ['Назад'])
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await update.message.reply_text(f"Папка {current_path} пуста.", reply_markup=reply_markup)
+        logger.info(f"Папка {current_path} пуста для пользователя {user_id}.")
 
 # Обработка callback-запросов
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -656,26 +652,25 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     if query.data.startswith("doc_download:"):
-        parts = query.data.split(":", 2)
-        if len(parts) != 3:
+        parts = query.data.split(":", 1)
+        if len(parts) != 2:
             await query.message.reply_text("Ошибка: неверный формат запроса.", reply_markup=default_reply_markup)
             logger.error(f"Неверный формат callback_data: {query.data}")
             return
-        dir_name = parts[1]
         try:
-            file_idx = int(parts[2])
+            file_idx = int(parts[1])
         except ValueError:
             await query.message.reply_text("Ошибка: неверный индекс файла.", reply_markup=default_reply_markup)
             logger.error(f"Неверный индекс в callback_data: {query.data}")
             return
-        sub_folder = f"/documents/{dir_name}/"
+        current_path = context.user_data.get('current_path', '/documents/')
         files = context.user_data.get('file_list', [])
         if not files or file_idx >= len(files):
             await query.message.reply_text("Ошибка: файл не найден.", reply_markup=default_reply_markup)
             logger.error(f"Файл с индексом {file_idx} не найден в file_list для user_id {user_id}")
             return
         file_name = files[file_idx]['name']
-        file_path = f"{sub_folder}{file_name}"
+        file_path = f"{current_path}{file_name}"
         download_url = get_yandex_disk_file(file_path)
         if not download_url:
             await query.message.reply_text("Ошибка: не удалось получить ссылку для скачивания.", reply_markup=default_reply_markup)
@@ -693,7 +688,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 await query.message.reply_document(
                     document=InputFile(file_response.content, filename=file_name)
                 )
-                logger.info(f"Файл {file_name} из {sub_folder} отправлен пользователю {user_id} без возврата в меню.")
+                logger.info(f"Файл {file_name} из {current_path} отправлен пользователю {user_id} без возврата в меню.")
             else:
                 await query.message.reply_text("Не удалось загрузить файл с Яндекс.Диска.", reply_markup=default_reply_markup)
                 logger.error(f"Ошибка загрузки файла {file_path}: код {file_response.status_code}")
@@ -788,6 +783,7 @@ async def show_main_menu_with_query(query: Update.callback_query, context: Conte
     context.user_data.pop('current_mode', None)
     context.user_data.pop('current_dir', None)
     context.user_data.pop('file_list', None)
+    context.user_data.pop('current_path', None)
     await query.message.reply_text("Выберите действие:", reply_markup=reply_markup)
 
 # Обработка текстовых сообщений
@@ -902,25 +898,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.info(f"Имя пользователя {chat_id} сохранено: {user_input}")
         return
 
-    # Обработка документов для РО
-    if context.user_data.get('current_mode') == 'documents_dirs':
-        documents_folder = "/documents/"
-        dirs = list_yandex_disk_directories(documents_folder)
+    # Обработка навигации по documents
+    if context.user_data.get('current_mode') == 'documents_nav':
+        current_path = context.user_data.get('current_path', '/documents/')
+        dirs = list_yandex_disk_directories(current_path)
         if user_input in dirs:
-            context.user_data['current_dir'] = user_input
-            context.user_data['current_mode'] = 'documents_files'
-            await show_documents_files(update, context, user_input)
+            # Переход в подпапку
+            context.user_data['current_path'] = current_path + user_input + '/'
+            await show_current_docs(update, context)
             return
-        elif user_input == "Назад":
+        elif user_input == 'Назад' and current_path != '/documents/':
+            # Возврат на уровень выше
+            parts = current_path.rstrip('/').split('/')
+            new_path = '/'.join(parts[:-1]) + '/' if len(parts) > 2 else '/documents/'
+            context.user_data['current_path'] = new_path
+            await show_current_docs(update, context)
+            return
+        elif user_input == 'В главное меню':
             await show_main_menu(update, context)
             return
         else:
-            await update.message.reply_text("Пожалуйста, выберите папку из списка.", reply_markup=default_reply_markup)
+            await update.message.reply_text("Пожалуйста, выберите из списка.", reply_markup=default_reply_markup)
             return
 
     # Обработка команд меню
     if user_input == "Документы для РО":
-        await show_documents_dirs(update, context)
+        context.user_data['current_mode'] = 'documents_nav'
+        context.user_data['current_path'] = '/documents/'
+        await show_current_docs(update, context)
         return
 
     if user_input == "Архив документов РО":
