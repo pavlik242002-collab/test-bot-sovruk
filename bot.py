@@ -645,8 +645,6 @@ async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         if not is_return:
             message = "Документы для РО" if current_path == '/documents/' else f"Папки в {folder_name}:"
             await update.message.reply_text(message, reply_markup=reply_markup)
-        else:
-            await update.message.reply_text("", reply_markup=reply_markup)  # Пустое сообщение с клавиатурой
         logger.info(f"Пользователь {user_id} получил список подпапок в {current_path}: {dirs}")
     else:
         # Если нет ни файлов, ни папок
