@@ -625,21 +625,24 @@ async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(f"Файлы в папке {folder_name}:", reply_markup=reply_markup)
         logger.info(f"Пользователь {user_id} получил список файлов в {current_path}: {[item['name'] for item in files]}")
+        # Автоматический возврат на уровень выше
+        parts = current_path.rstrip('/').split('/')
+        new_path = '/'.join(parts[:-1]) + '/' if len(parts) > 2 else '/documents/'
+        context.user_data['current_path'] = new_path
+        await show_current_docs(update, context)
+        return
+
     # Если есть поддиректории, показываем их
+    keyboard = [[dir_name] for dir_name in dirs]
+    if current_path != '/documents/':
+        keyboard.append(['Назад'])
+    keyboard.append(['В главное меню'])
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     if dirs:
-        keyboard = [[dir_name] for dir_name in dirs]
-        if current_path != '/documents/':
-            keyboard.append(['Назад'])
-        keyboard.append(['В главное меню'])
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         await update.message.reply_text("Выберите из списка:", reply_markup=reply_markup)
         logger.info(f"Пользователь {user_id} получил список подпапок в {current_path}: {dirs}")
-    elif not files:
+    else:
         # Если нет ни файлов, ни папок
-        keyboard = [['В главное меню']]
-        if current_path != '/documents/':
-            keyboard.insert(0, ['Назад'])
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         await update.message.reply_text(f"Папка {folder_name} пуста.", reply_markup=reply_markup)
         logger.info(f"Папка {current_path} пуста для пользователя {user_id}.")
 
@@ -694,7 +697,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 await query.message.reply_document(
                     document=InputFile(file_response.content, filename=file_name)
                 )
-                logger.info(f"Файл {file_name} из {current_path} отправлен пользователю {user_id} без возврата в меню.")
+                logger.info(f"Файл {file_name} из {current_path} отправлен пользователю {user_id}.")
             else:
                 await query.message.reply_text("Не удалось загрузить файл с Яндекс.Диска.", reply_markup=default_reply_markup)
                 logger.error(f"Ошибка загрузки файла {file_path}: код {file_response.status_code}")
@@ -752,7 +755,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                     await query.message.reply_document(
                         document=InputFile(file_response.content, filename=file_name)
                     )
-                    logger.info(f"Файл {file_name} отправлен пользователю {user_id} без возврата в меню.")
+                    logger.info(f"Файл {file_name} отправлен пользователю {user_id}.")
                 else:
                     await query.message.reply_text("Не удалось загрузить файл с Яндекс.Диска.", reply_markup=default_reply_markup)
                     logger.error(f"Ошибка загрузки файла {file_path}: код {file_response.status_code}")
@@ -854,7 +857,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await update.message.reply_text("Выберите регион:", reply_markup=reply_markup)
             return
         else:
-            await update.message.reply_text("Пожалуйста, выберите из предложенных округов.")
+            await update.message.reply_text("Пожалуйста, выберите из предложенных округов.", reply_markup=ReplyKeyboardMarkup([[district] for district in FEDERAL_DISTRICTS.keys()], resize_keyboard=True))
             return
 
     # Обработка выбора региона
@@ -880,7 +883,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.info(f"Пользователь {user_id} зарегистрирован с регионом {user_input}.")
             return
         else:
-            await update.message.reply_text("Пожалуйста, выберите из предложенных регионов.")
+            await update.message.reply_text("Пожалуйста, выберите из предложенных регионов.", reply_markup=ReplyKeyboardMarkup([[region] for region in regions], resize_keyboard=True))
             return
 
     # Обработка ввода имени
@@ -942,7 +945,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if user_input == "Загрузить файл":
         profile = USER_PROFILES.get(user_id)
         if not profile or "region" not in profile:
-            await update.message.reply_text("Ошибка: регион не определён. Обновите профиль с /start.")
+            await update.message.reply_text("Ошибка: регион не определён. Обновите профиль с /start.",
+                                           reply_markup=default_reply_markup)
             return
         context.user_data.pop('current_mode', None)
         context.user_data.pop('current_path', None)
@@ -999,7 +1003,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
         else:
             # Повторяем показ текущей папки с актуальной клавиатурой
-            await update.message.reply_text("Пожалуйста, выберите из списка.", reply_markup=ReplyKeyboardRemove())
+            await update.message.reply_text("Пожалуйста, выберите из списка.", reply_markup=default_reply_markup)
             await show_current_docs(update, context)
             return
 
