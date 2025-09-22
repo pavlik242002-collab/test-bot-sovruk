@@ -407,6 +407,7 @@ async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     context.user_data.pop('awaiting_delete', None)
     context.user_data.pop('current_mode', None)
     context.user_data.pop('current_dir', None)
+    context.user_data.pop('file_list', None)
 
     # Проверка доступа
     if user_id not in ALLOWED_USERS and user_id not in ALLOWED_ADMINS:
@@ -446,6 +447,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data['default_reply_markup'] = reply_markup
     context.user_data.pop('current_mode', None)
     context.user_data.pop('current_dir', None)
+    context.user_data.pop('file_list', None)
     await update.message.reply_text("Выберите действие:", reply_markup=reply_markup)
 
 # Обработчик команды /getfile
@@ -584,18 +586,13 @@ async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for
         logger.info(f"Папка {region_folder} пуста для пользователя {user_id}.")
         return
 
+    # Сохраняем список файлов в context.user_data
+    context.user_data['file_list'] = files
     keyboard = []
-    for item in files:
-        callback_data = f"{'delete' if for_deletion else 'download'}:{item['name']}"
-        if len(callback_data.encode('utf-8')) > 64:
-            logger.warning(f"callback_data для файла {item['name']} слишком длинное.")
-            continue
+    for idx, item in enumerate(files):
+        action = 'delete' if for_deletion else 'download'
+        callback_data = f"{action}:{idx}"
         keyboard.append([InlineKeyboardButton(item['name'], callback_data=callback_data)])
-    if not keyboard:
-        await update.message.reply_text("Ошибка: имена файлов слишком длинные.",
-                                       reply_markup=context.user_data.get('default_reply_markup', ReplyKeyboardRemove()))
-        logger.error(f"callback_data для файлов в {region_folder} превышают лимит 64 байта.")
-        return
     reply_markup = InlineKeyboardMarkup(keyboard)
     action_text = "Выберите файл для удаления:" if for_deletion else "Список всех файлов:"
     await update.message.reply_text(action_text, reply_markup=reply_markup)
@@ -634,18 +631,12 @@ async def show_documents_files(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.info(f"Папка {sub_folder} пуста для пользователя {user_id}.")
         return
 
+    # Сохраняем список файлов в context.user_data
+    context.user_data['file_list'] = files
     keyboard = []
-    for item in files:
-        callback_data = f"doc_download:{dir_name}:{item['name']}"
-        if len(callback_data.encode('utf-8')) > 64:
-            logger.warning(f"callback_data для файла {item['name']} в {dir_name} слишком длинное.")
-            continue
+    for idx, item in enumerate(files):
+        callback_data = f"doc_download:{dir_name}:{idx}"
         keyboard.append([InlineKeyboardButton(item['name'], callback_data=callback_data)])
-    if not keyboard:
-        await update.message.reply_text("Ошибка: имена файлов слишком длинные.",
-                                       reply_markup=context.user_data.get('default_reply_markup', ReplyKeyboardRemove()))
-        logger.error(f"callback_data для файлов в {sub_folder} превышают лимит 64 байта.")
-        return
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(f"Файлы в папке {dir_name}:", reply_markup=reply_markup)
     logger.info(f"Пользователь {user_id} запросил список файлов в {sub_folder}.")
@@ -671,8 +662,19 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             logger.error(f"Неверный формат callback_data: {query.data}")
             return
         dir_name = parts[1]
-        file_name = parts[2]
+        try:
+            file_idx = int(parts[2])
+        except ValueError:
+            await query.message.reply_text("Ошибка: неверный индекс файла.", reply_markup=default_reply_markup)
+            logger.error(f"Неверный индекс в callback_data: {query.data}")
+            return
         sub_folder = f"/documents/{dir_name}/"
+        files = context.user_data.get('file_list', [])
+        if not files or file_idx >= len(files):
+            await query.message.reply_text("Ошибка: файл не найден.", reply_markup=default_reply_markup)
+            logger.error(f"Файл с индексом {file_idx} не найден в file_list для user_id {user_id}")
+            return
+        file_name = files[file_idx]['name']
         file_path = f"{sub_folder}{file_name}"
         download_url = get_yandex_disk_file(file_path)
         if not download_url:
@@ -708,61 +710,67 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     region_folder = f"/regions/{profile['region']}/"
 
-    if query.data.startswith("download:"):
-        file_name = query.data.split(":", 1)[1]
-        if not file_name.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx')):
-            await query.message.reply_text("Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx.", reply_markup=default_reply_markup)
-            logger.error(f"Неподдерживаемый формат файла {file_name} для пользователя {user_id}.")
-            return
-
-        files = list_yandex_disk_files(region_folder)
-        matching_file = next((item for item in files if item['name'].lower() == file_name.lower()), None)
-
-        if not matching_file:
-            await query.message.reply_text(f"Файл '{file_name}' не найден в папке {region_folder}.", reply_markup=default_reply_markup)
-            logger.info(f"Файл '{file_name}' не найден для пользователя {user_id}.")
-            return
-
-        file_path = matching_file['path']
-        download_url = get_yandex_disk_file(file_path)
-        if not download_url:
-            await query.message.reply_text("Ошибка: не удалось получить ссылку для скачивания.", reply_markup=default_reply_markup)
-            logger.error(f"Не удалось получить ссылку для файла {file_path}.")
-            return
-
+    if query.data.startswith("download:") or query.data.startswith("delete:"):
+        action, file_idx_str = query.data.split(":", 1)
         try:
-            file_response = requests.get(download_url)
-            if file_response.status_code == 200:
-                file_size = len(file_response.content) / (1024 * 1024)
-                if file_size > 20:
-                    await query.message.reply_text("Файл слишком большой (>20 МБ).", reply_markup=default_reply_markup)
-                    logger.error(f"Файл {file_name} слишком большой: {file_size} МБ")
-                    return
-                await query.message.reply_document(
-                    document=InputFile(file_response.content, filename=file_name)
-                )
-                logger.info(f"Файл {file_name} отправлен пользователю {user_id} без возврата в меню.")
-            else:
-                await query.message.reply_text("Не удалось загрузить файл с Яндекс.Диска.", reply_markup=default_reply_markup)
-                logger.error(f"Ошибка загрузки файла {file_path}: код {file_response.status_code}")
-        except Exception as e:
-            await query.message.reply_text(f"Ошибка при отправке файла: {str(e)}", reply_markup=default_reply_markup)
-            logger.error(f"Ошибка при отправке файла {file_path}: {str(e)}")
-
-    elif query.data.startswith("delete:"):
-        if user_id not in ALLOWED_ADMINS:
-            await query.message.reply_text("Только администраторы могут удалять файлы.", reply_markup=default_reply_markup)
-            logger.info(f"Пользователь {user_id} попытался удалить файл.")
+            file_idx = int(file_idx_str)
+        except ValueError:
+            await query.message.reply_text("Ошибка: неверный индекс файла.", reply_markup=default_reply_markup)
+            logger.error(f"Неверный индекс в callback_data: {query.data}")
             return
 
-        file_name = query.data.split(":", 1)[1]
+        files = context.user_data.get('file_list', [])
+        if not files or file_idx >= len(files):
+            await query.message.reply_text("Ошибка: файл не найден.", reply_markup=default_reply_markup)
+            logger.error(f"Файл с индексом {file_idx} не найден в file_list для user_id {user_id}")
+            return
+
+        file_name = files[file_idx]['name']
         file_path = f"{region_folder}{file_name}"
-        if delete_yandex_disk_file(file_path):
-            await query.message.reply_text(f"Файл '{file_name}' удалён из папки {region_folder}.", reply_markup=default_reply_markup)
-            logger.info(f"Администратор {user_id} удалил файл {file_name}.")
-        else:
-            await query.message.reply_text(f"Ошибка при удалении файла '{file_name}'.", reply_markup=default_reply_markup)
-            logger.error(f"Ошибка при удалении файла {file_name} для пользователя {user_id}.")
+
+        if action == "download":
+            if not file_name.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx')):
+                await query.message.reply_text("Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx.", reply_markup=default_reply_markup)
+                logger.error(f"Неподдерживаемый формат файла {file_name} для пользователя {user_id}.")
+                return
+
+            download_url = get_yandex_disk_file(file_path)
+            if not download_url:
+                await query.message.reply_text("Ошибка: не удалось получить ссылку для скачивания.", reply_markup=default_reply_markup)
+                logger.error(f"Не удалось получить ссылку для файла {file_path}.")
+                return
+
+            try:
+                file_response = requests.get(download_url)
+                if file_response.status_code == 200:
+                    file_size = len(file_response.content) / (1024 * 1024)
+                    if file_size > 20:
+                        await query.message.reply_text("Файл слишком большой (>20 МБ).", reply_markup=default_reply_markup)
+                        logger.error(f"Файл {file_name} слишком большой: {file_size} МБ")
+                        return
+                    await query.message.reply_document(
+                        document=InputFile(file_response.content, filename=file_name)
+                    )
+                    logger.info(f"Файл {file_name} отправлен пользователю {user_id} без возврата в меню.")
+                else:
+                    await query.message.reply_text("Не удалось загрузить файл с Яндекс.Диска.", reply_markup=default_reply_markup)
+                    logger.error(f"Ошибка загрузки файла {file_path}: код {file_response.status_code}")
+            except Exception as e:
+                await query.message.reply_text(f"Ошибка при отправке файла: {str(e)}", reply_markup=default_reply_markup)
+                logger.error(f"Ошибка при отправке файла {file_path}: {str(e)}")
+
+        elif action == "delete":
+            if user_id not in ALLOWED_ADMINS:
+                await query.message.reply_text("Только администраторы могут удалять файлы.", reply_markup=default_reply_markup)
+                logger.info(f"Пользователь {user_id} попытался удалить файл.")
+                return
+
+            if delete_yandex_disk_file(file_path):
+                await query.message.reply_text(f"Файл '{file_name}' удалён из папки {region_folder}.", reply_markup=default_reply_markup)
+                logger.info(f"Администратор {user_id} удалил файл {file_name}.")
+            else:
+                await query.message.reply_text(f"Ошибка при удалении файла '{file_name}'.", reply_markup=default_reply_markup)
+                logger.error(f"Ошибка при удалении файла {file_name} для пользователя {user_id}.")
 
 # Вспомогательная функция для отображения главного меню через callback_query
 async def show_main_menu_with_query(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -779,6 +787,7 @@ async def show_main_menu_with_query(query: Update.callback_query, context: Conte
     context.user_data['default_reply_markup'] = reply_markup
     context.user_data.pop('current_mode', None)
     context.user_data.pop('current_dir', None)
+    context.user_data.pop('file_list', None)
     await query.message.reply_text("Выберите действие:", reply_markup=reply_markup)
 
 # Обработка текстовых сообщений
