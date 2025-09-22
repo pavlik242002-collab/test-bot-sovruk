@@ -639,7 +639,7 @@ async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     keyboard.append(['В главное меню'])
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     if dirs:
-        await update.message.reply_text("Выберите из списка:", reply_markup=reply_markup)
+        await update.message.reply_text(f"Папки в {folder_name}:", reply_markup=reply_markup)
         logger.info(f"Пользователь {user_id} получил список подпапок в {current_path}: {dirs}")
     else:
         # Если нет ни файлов, ни папок
