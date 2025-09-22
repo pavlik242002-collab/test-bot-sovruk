@@ -607,6 +607,8 @@ async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # Очищаем file_list перед началом обработки
     context.user_data.pop('file_list', None)
     current_path = context.user_data.get('current_path', '/documents/')
+    # Извлекаем название текущей папки
+    folder_name = current_path.rstrip('/').split('/')[-1] or "Документы"
     files = list_yandex_disk_files(current_path)
     dirs = list_yandex_disk_directories(current_path)
 
@@ -618,9 +620,8 @@ async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             callback_data = f"doc_download:{idx}"
             keyboard.append([InlineKeyboardButton(item['name'], callback_data=callback_data)])
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("Файлы в папке:", reply_markup=reply_markup)
+        await update.message.reply_text(f"Файлы в папке {folder_name}:", reply_markup=reply_markup)
         logger.info(f"Пользователь {user_id} запросил список файлов в {current_path}.")
-
     # Если есть поддиректории, показываем их
     if dirs:
         keyboard = [[dir_name] for dir_name in dirs]
@@ -636,7 +637,7 @@ async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         if current_path != '/documents/':
             keyboard.insert(0, ['Назад'])
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        await update.message.reply_text(f"Папка {current_path} пуста.", reply_markup=reply_markup)
+        await update.message.reply_text(f"Папка {folder_name} пуста.", reply_markup=reply_markup)
         logger.info(f"Папка {current_path} пуста для пользователя {user_id}.")
 
 # Обработка callback-запросов
