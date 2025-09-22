@@ -612,6 +612,9 @@ async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     files = list_yandex_disk_files(current_path)
     dirs = list_yandex_disk_directories(current_path)
 
+    # Логируем текущий путь и содержимое
+    logger.info(f"Пользователь {user_id} в папке {current_path}, найдено файлов: {len(files)}, папок: {len(dirs)}")
+
     # Если есть файлы, показываем их
     if files:
         context.user_data['file_list'] = files
@@ -621,7 +624,7 @@ async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             keyboard.append([InlineKeyboardButton(item['name'], callback_data=callback_data)])
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(f"Файлы в папке {folder_name}:", reply_markup=reply_markup)
-        logger.info(f"Пользователь {user_id} запросил список файлов в {current_path}.")
+        logger.info(f"Пользователь {user_id} получил список файлов в {current_path}: {[item['name'] for item in files]}")
     # Если есть поддиректории, показываем их
     if dirs:
         keyboard = [[dir_name] for dir_name in dirs]
@@ -630,7 +633,7 @@ async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         keyboard.append(['В главное меню'])
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         await update.message.reply_text("Выберите из списка:", reply_markup=reply_markup)
-        logger.info(f"Пользователь {user_id} запросил список подпапок в {current_path}.")
+        logger.info(f"Пользователь {user_id} получил список подпапок в {current_path}: {dirs}")
     elif not files:
         # Если нет ни файлов, ни папок
         keyboard = [['В главное меню']]
@@ -974,13 +977,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         current_path = context.user_data.get('current_path', '/documents/')
         # Очищаем file_list перед проверкой директорий
         context.user_data.pop('file_list', None)
+        logger.info(f"Пользователь {user_id} пытается перейти в папку: {user_input}, текущий путь: {current_path}")
         dirs = list_yandex_disk_directories(current_path)
         if user_input in dirs:
             # Переход в подпапку
-            context.user_data['current_path'] = current_path + user_input + '/'
+            context.user_data['current_path'] = f"{current_path}{user_input}/"
+            logger.info(f"Пользователь {user_id} перешёл в папку: {context.user_data['current_path']}")
             await show_current_docs(update, context)
             return
         elif user_input == 'В главное меню':
+            logger.info(f"Пользователь {user_id} вернулся в главное меню из {current_path}")
             await show_main_menu(update, context)
             return
         elif user_input == 'Назад' and current_path != '/documents/':
@@ -989,10 +995,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             new_path = '/'.join(parts[:-1]) + '/' if len(parts) > 2 else '/documents/'
             context.user_data['current_path'] = new_path
             context.user_data.pop('file_list', None)  # Очищаем старый список файлов
+            logger.info(f"Пользователь {user_id} вернулся назад в {new_path}")
             await show_current_docs(update, context)
             return
         else:
             # Повторяем показ текущей папки, чтобы обновить клавиатуру
+            await update.message.reply_text("Пожалуйста, выберите из списка.", reply_markup=ReplyKeyboardRemove())
             await show_current_docs(update, context)
             return
 
