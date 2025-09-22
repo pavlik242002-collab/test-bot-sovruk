@@ -604,6 +604,8 @@ async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for
 async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывает файлы и/или поддиректории в текущей папке в /documents/."""
     user_id: int = update.effective_user.id
+    # Очищаем file_list перед началом обработки
+    context.user_data.pop('file_list', None)
     current_path = context.user_data.get('current_path', '/documents/')
     files = list_yandex_disk_files(current_path)
     dirs = list_yandex_disk_directories(current_path)
@@ -989,7 +991,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await show_current_docs(update, context)
             return
         else:
-            await update.message.reply_text("Пожалуйста, выберите из списка.", reply_markup=default_reply_markup)
+            # Повторяем показ текущей папки, чтобы обновить клавиатуру
+            await show_current_docs(update, context)
             return
 
     if context.user_data.get('awaiting_user_id'):
