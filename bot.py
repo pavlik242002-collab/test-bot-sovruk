@@ -969,11 +969,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Обработка навигации по documents
     if context.user_data.get('current_mode') == 'documents_nav':
         current_path = context.user_data.get('current_path', '/documents/')
+        # Очищаем file_list перед проверкой директорий
+        context.user_data.pop('file_list', None)
         dirs = list_yandex_disk_directories(current_path)
         if user_input in dirs:
             # Переход в подпапку
             context.user_data['current_path'] = current_path + user_input + '/'
-            context.user_data.pop('file_list', None)  # Очищаем старый список файлов
             await show_current_docs(update, context)
             return
         elif user_input == 'В главное меню':
