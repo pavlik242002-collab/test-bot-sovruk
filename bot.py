@@ -601,7 +601,7 @@ async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for
     logger.info(f"Пользователь {user_id} запросил список файлов в {region_folder}.")
 
 # Отображение содержимого текущей папки в /documents/
-async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE, is_return: bool = False) -> None:
     """Показывает файлы и/или поддиректории в текущей папке в /documents/."""
     user_id: int = update.effective_user.id
     # Очищаем file_list перед началом обработки
@@ -629,17 +629,24 @@ async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         parts = current_path.rstrip('/').split('/')
         new_path = '/'.join(parts[:-1]) + '/' if len(parts) > 2 else '/documents/'
         context.user_data['current_path'] = new_path
-        await show_current_docs(update, context)
+        await show_current_docs(update, context, is_return=True)
         return
 
-    # Если есть поддиректории, показываем их
+    # Формируем клавиатуру с папками
     keyboard = [[dir_name] for dir_name in dirs]
     if current_path != '/documents/':
         keyboard.append(['Назад'])
     keyboard.append(['В главное меню'])
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+    # Показываем папки или пустую папку
     if dirs:
-        await update.message.reply_text(f"Папки в {folder_name}:", reply_markup=reply_markup)
+        # Если это возврат назад после показа файлов, не отправляем сообщение
+        if not is_return:
+            message = "Документы для РО" if current_path == '/documents/' else f"Папки в {folder_name}:"
+            await update.message.reply_text(message, reply_markup=reply_markup)
+        else:
+            await update.message.reply_text("", reply_markup=reply_markup)  # Пустое сообщение с клавиатурой
         logger.info(f"Пользователь {user_id} получил список подпапок в {current_path}: {dirs}")
     else:
         # Если нет ни файлов, ни папок
@@ -999,7 +1006,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             new_path = '/'.join(parts[:-1]) + '/' if len(parts) > 2 else '/documents/'
             context.user_data['current_path'] = new_path
             logger.info(f"Пользователь {user_id} вернулся назад в {new_path}")
-            await show_current_docs(update, context)
+            await show_current_docs(update, context, is_return=True)
             return
         else:
             # Повторяем показ текущей папки с актуальной клавиатурой
