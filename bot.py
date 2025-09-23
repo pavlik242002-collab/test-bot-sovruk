@@ -240,6 +240,22 @@ histories: Dict[int, Dict[str, Any]] = {}
 
 
 # Функции для работы с Яндекс.Диском
+def check_yandex_token() -> bool:
+    """Проверяет валидность YANDEX_TOKEN."""
+    url = 'https://cloud-api.yandex.net/v1/disk/'
+    headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            logger.info("YANDEX_TOKEN валиден.")
+            return True
+        logger.error(f"Ошибка проверки YANDEX_TOKEN: код {response.status_code}, ответ: {response.text}")
+        return False
+    except Exception as e:
+        logger.error(f"Ошибка при проверке YANDEX_TOKEN: {str(e)}")
+        return False
+
+
 def create_yandex_folder(folder_path: str) -> bool:
     """Создаёт папку на Яндекс.Диске."""
     folder_path = folder_path.rstrip('/')
@@ -268,30 +284,29 @@ def list_yandex_disk_items(folder_path: str, item_type: str = None) -> List[Dict
     headers = {'Authorization': f'OAuth {YANDEX_TOKEN}'}
     try:
         response = requests.get(url, headers=headers)
+        logger.info(f"Запрос к Яндекс.Диску для {folder_path}: код {response.status_code}, ответ: {response.text}")
         if response.status_code == 200:
             items = response.json().get('_embedded', {}).get('items', [])
+            logger.info(f"Найдено {len(items)} элементов в {folder_path}: {[item['name'] for item in items]}")
             if item_type:
-                return [item for item in items if item['type'] == item_type]
+                filtered_items = [item for item in items if item['type'] == item_type]
+                logger.info(
+                    f"Отфильтровано {len(filtered_items)} элементов типа {item_type}: {[item['name'] for item in filtered_items]}")
+                return filtered_items
             return items
-        logger.error(f"Ошибка Яндекс.Диска: код {response.status_code}, ответ: {response.text}")
+        logger.error(f"Ошибка Яндекс.Диска для {folder_path}: код {response.status_code}, ответ: {response.text}")
         return []
     except Exception as e:
         logger.error(f"Ошибка при запросе списка элементов в {folder_path}: {str(e)}")
         return []
 
 
-def list_yandex_disk_directories(folder_path: str) -> List[str]:
-    """Возвращает список имен поддиректорий в папке."""
-    items = list_yandex_disk_items(folder_path, item_type='dir')
-    return [item['name'] for item in items]
-
-
 def list_yandex_disk_files(folder_path: str) -> List[Dict[str, str]]:
-    """Возвращает список файлов в папке на Яндекс.Диске (с фильтром по расширениям)."""
+    """Возвращает список файлов в папке на Яндекс.Диске."""
     folder_path = folder_path.rstrip('/')
     items = list_yandex_disk_items(folder_path, item_type='file')
-    supported_extensions = ('.pdf', '.doc', '.docx', '.xls', '.xlsx')
-    files = [item for item in items if item['name'].lower().endswith(supported_extensions)]
+    # Временно отключаем фильтрацию по расширениям для диагностики
+    files = items
     logger.info(f"Найдено {len(files)} файлов в папке {folder_path}: {[item['name'] for item in files]}")
     return files
 
@@ -488,6 +503,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data.pop('current_dir', None)
     context.user_data.pop('file_list', None)
     context.user_data.pop('current_path', None)
+    context.user_data.pop('region_folder', None)
     await update.message.reply_text("Выберите действие:", reply_markup=reply_markup)
 
 
@@ -530,14 +546,10 @@ async def search_and_send_file(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     region_folder = f"/regions/{profile['region']}/"
+    logger.info(f"Проверка папки {region_folder} для пользователя {user_id}")
     if not create_yandex_folder(region_folder):
         await update.message.reply_text("Ошибка: не удалось проверить или создать папку региона.")
         logger.error(f"Не удалось создать папку {region_folder} для пользователя {user_id}.")
-        return
-
-    if not file_name.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx')):
-        await update.message.reply_text("Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx.")
-        logger.error(f"Неподдерживаемый формат файла {file_name} для пользователя {user_id}.")
         return
 
     files = list_yandex_disk_files(region_folder)
@@ -586,10 +598,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     document = update.message.document
     file_name = document.file_name
-    if not file_name.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx')):
-        await update.message.reply_text("Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx.")
-        return
-
     file_size = document.file_size / (1024 * 1024)
     if file_size > 50:
         await update.message.reply_text("Файл слишком большой (>50 МБ).")
@@ -600,6 +608,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("Ошибка: регион не определён. Обновите профиль с /start.")
         return
     region_folder = f"/regions/{profile['region']}/"
+    logger.info(f"Проверка папки {region_folder} для загрузки файла от пользователя {user_id}")
     if not create_yandex_folder(region_folder):
         await update.message.reply_text("Ошибка: не удалось создать папку региона.")
         logger.error(f"Не удалось создать папку {region_folder} для пользователя {user_id}.")
@@ -633,8 +642,11 @@ async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for
         return
 
     region_folder = f"/regions/{profile['region']}/"
+    logger.info(f"Проверка папки {region_folder} для пользователя {user_id}")
     if not create_yandex_folder(region_folder):
-        await update.message.reply_text("Ошибка: не удалось создать папку региона.")
+        await update.message.reply_text("Ошибка: не удалось создать папку региона.",
+                                        reply_markup=context.user_data.get('default_reply_markup',
+                                                                           ReplyKeyboardRemove()))
         logger.error(f"Не удалось создать папку {region_folder} для пользователя {user_id}.")
         return
 
@@ -646,8 +658,9 @@ async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for
         logger.info(f"Папка {region_folder} пуста для пользователя {user_id}.")
         return
 
-    # Сохраняем список файлов в context.user_data
+    # Сохраняем список файлов и путь в context.user_data
     context.user_data['file_list'] = files
+    context.user_data['region_folder'] = region_folder
     keyboard = []
     for idx, item in enumerate(files):
         action = 'delete' if for_deletion else 'download'
@@ -656,7 +669,7 @@ async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for
     reply_markup = InlineKeyboardMarkup(keyboard)
     action_text = "Выберите файл для удаления:" if for_deletion else "Список всех файлов:"
     await update.message.reply_text(action_text, reply_markup=reply_markup)
-    logger.info(f"Пользователь {user_id} запросил список файлов в {region_folder}: {[item['name'] for item in files]}")
+    logger.info(f"Пользователь {user_id} получил список файлов в {region_folder}: {[item['name'] for item in files]}")
 
 
 # Отображение содержимого текущей папки в /documents/
@@ -666,6 +679,7 @@ async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     context.user_data.pop('file_list', None)
     current_path = context.user_data.get('current_path', '/documents/')
     folder_name = current_path.rstrip('/').split('/')[-1] or "Документы"
+    logger.info(f"Проверка папки {current_path} для пользователя {user_id}")
     if not create_yandex_folder(current_path):
         await update.message.reply_text(f"Ошибка: не удалось создать папку {current_path}.",
                                         reply_markup=context.user_data.get('default_reply_markup',
@@ -725,6 +739,15 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await query.message.reply_text("Ошибка: сообщение недоступно.", reply_markup=default_reply_markup)
         return
 
+    if not profile or "region" not in profile:
+        await query.message.reply_text("Ошибка: регион не определён. Перезапустите /start.",
+                                       reply_markup=default_reply_markup)
+        logger.error(f"Ошибка: регион не определён для пользователя {user_id}.")
+        return
+
+    region_folder = context.user_data.get('region_folder', f"/regions/{profile['region']}/")
+    logger.info(f"Обработка callback для user_id {user_id}, папка: {region_folder}")
+
     if query.data.startswith("doc_download:"):
         parts = query.data.split(":", 1)
         if len(parts) != 2:
@@ -742,11 +765,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         logger.info(
             f"Попытка скачать файл, file_list: {[item['name'] for item in files if files]}, индекс: {file_idx}, путь: {current_path}")
         if not files or file_idx >= len(files):
-            await query.message.reply_text("Ошибка: файл не найден. Попробуйте обновить список.",
-                                           reply_markup=default_reply_markup)
-            logger.error(
-                f"Файл с индексом {file_idx} не найден в file_list для user_id {user_id}, file_list: {[item['name'] for item in files if files]}")
-            # Попробуем заново загрузить список файлов
+            # Повторная загрузка списка файлов
             files = list_yandex_disk_files(current_path)
             context.user_data['file_list'] = files
             if not files or file_idx >= len(files):
@@ -789,18 +808,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             logger.error(f"Ошибка при отправке файла {file_path}: {str(e)}")
         return
 
-    if not profile or "region" not in profile:
-        await query.message.reply_text("Ошибка: регион не определён. Перезапустите /start.",
-                                       reply_markup=default_reply_markup)
-        logger.error(f"Ошибка: регион не определён для пользователя {user_id}.")
-        return
-
-    region_folder = f"/regions/{profile['region']}/"
-    if not create_yandex_folder(region_folder):
-        await query.message.reply_text("Ошибка: не удалось создать папку региона.", reply_markup=default_reply_markup)
-        logger.error(f"Не удалось создать папку {region_folder} для пользователя {user_id}.")
-        return
-
     if query.data.startswith("download:") or query.data.startswith("delete:"):
         action, file_idx_str = query.data.split(":", 1)
         try:
@@ -814,26 +821,20 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         logger.info(
             f"Попытка {action} файла, file_list: {[item['name'] for item in files if files]}, индекс: {file_idx}, путь: {region_folder}")
         if not files or file_idx >= len(files):
-            # Попробуем заново загрузить список файлов
+            # Повторная загрузка списка файлов
             files = list_yandex_disk_files(region_folder)
             context.user_data['file_list'] = files
             if not files or file_idx >= len(files):
-                await query.message.reply_text("Ошибка: файл не найден. Попробуйте обновить список.",
+                await query.message.reply_text("Ошибка: список файлов пуст или файл не найден.",
                                                reply_markup=default_reply_markup)
                 logger.error(
-                    f"Файл с индексом {file_idx} не найден в file_list для user_id {user_id}, file_list: {[item['name'] for item in files if files]}")
+                    f"Повторная загрузка списка файлов не помогла, file_list: {[item['name'] for item in files if files]}")
                 return
 
         file_name = files[file_idx]['name']
         file_path = f"{region_folder.rstrip('/')}/{file_name}"
 
         if action == "download":
-            if not file_name.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx')):
-                await query.message.reply_text("Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx.",
-                                               reply_markup=default_reply_markup)
-                logger.error(f"Неподдерживаемый формат файла {file_name} для пользователя {user_id}.")
-                return
-
             download_url = get_yandex_disk_file(file_path)
             if not download_url:
                 await query.message.reply_text("Ошибка: не удалось получить ссылку для скачивания.",
@@ -902,6 +903,7 @@ async def show_main_menu_with_query(query: Update.callback_query, context: Conte
     context.user_data.pop('current_dir', None)
     context.user_data.pop('file_list', None)
     context.user_data.pop('current_path', None)
+    context.user_data.pop('region_folder', None)
     await query.message.reply_text("Выберите действие:", reply_markup=reply_markup)
 
 
@@ -1041,6 +1043,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context.user_data.pop('current_mode', None)
         context.user_data.pop('current_path', None)
         context.user_data.pop('file_list', None)
+        context.user_data.pop('region_folder', None)
         await show_file_list(update, context)
         return
 
@@ -1060,6 +1063,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context.user_data.pop('current_mode', None)
         context.user_data.pop('current_path', None)
         context.user_data.pop('file_list', None)
+        context.user_data.pop('region_folder', None)
         await update.message.reply_text("Выберите действие:", reply_markup=reply_markup)
         logger.info(f"Администратор {user_id} запросил управление пользователями.")
         return
@@ -1073,6 +1077,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context.user_data.pop('current_mode', None)
         context.user_data.pop('current_path', None)
         context.user_data.pop('file_list', None)
+        context.user_data.pop('region_folder', None)
         await update.message.reply_text(
             "Отправьте файл для загрузки.",
             reply_markup=default_reply_markup
@@ -1091,6 +1096,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context.user_data.pop('current_mode', None)
         context.user_data.pop('current_path', None)
         context.user_data.pop('file_list', None)
+        context.user_data.pop('region_folder', None)
         await show_file_list(update, context, for_deletion=True)
         return
 
@@ -1311,6 +1317,10 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 def main() -> None:
     """Запуск бота."""
     logger.info("Запуск Telegram бота...")
+    # Проверка токена Яндекс.Диска
+    if not check_yandex_token():
+        logger.error("YANDEX_TOKEN недействителен. Бот не может продолжить работу.")
+        return
     # Создание корневых папок
     if not create_yandex_folder('/regions/'):
         logger.error("Не удалось создать папку /regions/")
