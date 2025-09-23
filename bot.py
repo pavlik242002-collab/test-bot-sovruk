@@ -399,16 +399,7 @@ async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     chat_id: int = update.effective_chat.id
 
     # Очистка временных данных
-    context.user_data.pop('awaiting_user_id', None)
-    context.user_data.pop('awaiting_fio', None)
-    context.user_data.pop('awaiting_federal_district', None)
-    context.user_data.pop('awaiting_region', None)
-    context.user_data.pop('selected_federal_district', None)
-    context.user_data.pop('awaiting_delete', None)
-    context.user_data.pop('current_mode', None)
-    context.user_data.pop('current_dir', None)
-    context.user_data.pop('file_list', None)
-    context.user_data.pop('current_path', None)
+    context.user_data.clear()  # Очищаем все данные, чтобы избежать конфликтов
 
     # Проверка доступа
     if user_id not in ALLOWED_USERS and user_id not in ALLOWED_ADMINS:
@@ -446,11 +437,12 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     ]
     reply_markup = ReplyKeyboardMarkup(admin_keyboard, resize_keyboard=True)
     context.user_data['default_reply_markup'] = reply_markup
-    context.user_data.pop('current_mode', None)
-    context.user_data.pop('current_dir', None)
-    context.user_data.pop('file_list', None)
-    context.user_data.pop('current_path', None)
+    context.user_data['current_mode'] = None
+    context.user_data['current_path'] = None
+    context.user_data['file_list'] = None
+    context.user_data['return_path'] = None
     await update.message.reply_text("Выберите действие:", reply_markup=reply_markup)
+    logger.info(f"Пользователь {user_id} открыл главное меню.")
 
 # Обработчик команды /getfile
 async def get_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -598,14 +590,12 @@ async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for
     reply_markup = InlineKeyboardMarkup(keyboard)
     action_text = "Выберите файл для удаления:" if for_deletion else "Список всех файлов:"
     await update.message.reply_text(action_text, reply_markup=reply_markup)
-    logger.info(f"Пользователь {user_id} запросил список файлов в {region_folder}.")
+    logger.info(f"Пользователь {user_id} запросил список файлов в {region_folder}: {[item['name'] for item in files]}")
 
 # Отображение содержимого текущей папки в /documents/
 async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE, is_return: bool = False) -> None:
     """Показывает файлы и/или поддиректории в текущей папке в /documents/."""
     user_id: int = update.effective_user.id
-    # Очищаем file_list перед началом обработки
-    context.user_data.pop('file_list', None)
     current_path = context.user_data.get('current_path', '/documents/')
     # Извлекаем название текущей папки
     folder_name = current_path.rstrip('/').split('/')[-1] or "Документы"
@@ -615,8 +605,14 @@ async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     # Логируем текущий путь и содержимое
     logger.info(f"Пользователь {user_id} в папке {current_path}, найдено файлов: {len(files)}, папок: {len(dirs)}")
 
+    # Сохраняем путь для возврата
+    parts = current_path.rstrip('/').split('/')
+    return_path = '/'.join(parts[:-1]) + '/' if len(parts) > 2 else '/documents/'
+    context.user_data['return_path'] = return_path
+
     # Если есть файлы, показываем их
     if files:
+        # Сохраняем список файлов в context.user_data
         context.user_data['file_list'] = files
         keyboard = []
         for idx, item in enumerate(files):
@@ -625,12 +621,7 @@ async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(f"Файлы в папке {folder_name}:", reply_markup=reply_markup)
         logger.info(f"Пользователь {user_id} получил список файлов в {current_path}: {[item['name'] for item in files]}")
-        # Автоматический возврат на уровень выше
-        parts = current_path.rstrip('/').split('/')
-        new_path = '/'.join(parts[:-1]) + '/' if len(parts) > 2 else '/documents/'
-        context.user_data['current_path'] = new_path
-        await show_current_docs(update, context, is_return=True)
-        return
+        return  # Ждём выбора файла, не возвращаемся назад
 
     # Формируем клавиатуру с папками
     keyboard = [[dir_name] for dir_name in dirs]
@@ -641,7 +632,7 @@ async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
     # Показываем папки или пустую папку
     if dirs:
-        # Если это возврат назад после показа файлов, не отправляем сообщение
+        # Если это возврат назад, не отправляем повторное сообщение
         if not is_return:
             message = "Документы для РО" if current_path == '/documents/' else f"Папки в {folder_name}:"
             await update.message.reply_text(message, reply_markup=reply_markup)
@@ -663,6 +654,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     if not query.message:
         logger.error(f"Ошибка: query.message is None для user_id {user_id}")
+        await query.message.reply_text("Произошла ошибка, попробуйте снова.", reply_markup=default_reply_markup)
         return
 
     if query.data.startswith("doc_download:"):
@@ -677,13 +669,31 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             await query.message.reply_text("Ошибка: неверный индекс файла.", reply_markup=default_reply_markup)
             logger.error(f"Неверный индекс в callback_data: {query.data}")
             return
+
+        # Проверяем current_path
         current_path = context.user_data.get('current_path', '/documents/')
+        if not current_path:
+            current_path = '/documents/'
+            context.user_data['current_path'] = current_path
+            logger.warning(f"current_path отсутствовал, установлен по умолчанию: {current_path}")
+
+        # Проверяем file_list
         files = context.user_data.get('file_list', [])
-        logger.info(f"Попытка скачать файл, file_list: {[item['name'] for item in files]}, индекс: {file_idx}, путь: {current_path}")
+        logger.info(f"Попытка скачать файл, file_list: {[item['name'] for item in files if files], индекс: {file_idx}, путь: {current_path}")
         if not files or file_idx >= len(files):
-            await query.message.reply_text("Ошибка: файл не найден.", reply_markup=default_reply_markup)
-            logger.error(f"Файл с индексом {file_idx} не найден в file_list для user_id {user_id}")
-            return
+            # Повторно загружаем файлы из текущей папки
+            files = list_yandex_disk_files(current_path)
+            context.user_data['file_list'] = files
+            logger.info(f"Повторная загрузка file_list: {[item['name'] for item in files]}")
+            if not files or file_idx >= len(files):
+                await query.message.reply_text("Ошибка: файл не найден или папка пуста.", reply_markup=default_reply_markup)
+                logger.error(f"Файл с индексом {file_idx} не найден в file_list для user_id {user_id}, путь: {current_path}")
+                # Возвращаемся к списку папок
+                context.user_data['current_path'] = context.user_data.get('return_path', '/documents/')
+                context.user_data['file_list'] = None
+                await show_current_docs(update, context, is_return=True)
+                return
+
         file_name = files[file_idx]['name']
         file_path = f"{current_path}{file_name}"
         download_url = get_yandex_disk_file(file_path)
@@ -706,7 +716,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 logger.info(f"Файл {file_name} из {current_path} отправлен пользователю {user_id}.")
                 # После скачивания возвращаемся на уровень выше
                 context.user_data['current_path'] = context.user_data.get('return_path', '/documents/')
-                context.user_data.pop('file_list', None)  # Очищаем file_list после скачивания
+                context.user_data['file_list'] = None  # Очищаем file_list после скачивания
                 await show_current_docs(update, context, is_return=True)
             else:
                 await query.message.reply_text("Не удалось загрузить файл с Яндекс.Диска.", reply_markup=default_reply_markup)
@@ -735,9 +745,15 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
         files = context.user_data.get('file_list', [])
         if not files or file_idx >= len(files):
-            await query.message.reply_text("Ошибка: файл не найден.", reply_markup=default_reply_markup)
-            logger.error(f"Файл с индексом {file_idx} не найден в file_list для user_id {user_id}")
-            return
+            # Повторно загружаем файлы из региональной папки
+            files = list_yandex_disk_files(region_folder)
+            context.user_data['file_list'] = files
+            logger.info(f"Повторная загрузка file_list для региона: {[item['name'] for item in files]}")
+            if not files or file_idx >= len(files):
+                await query.message.reply_text("Ошибка: файл не найден или папка пуста.", reply_markup=default_reply_markup)
+                logger.error(f"Файл с индексом {file_idx} не найден в file_list для user_id {user_id}, путь: {region_folder}")
+                await show_file_list(update, context, for_deletion=(action == "delete"))
+                return
 
         file_name = files[file_idx]['name']
         file_path = f"{region_folder}{file_name}"
@@ -766,6 +782,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                         document=InputFile(file_response.content, filename=file_name)
                     )
                     logger.info(f"Файл {file_name} отправлен пользователю {user_id}.")
+                    # Обновляем список файлов после скачивания
+                    await show_file_list(update, context)
                 else:
                     await query.message.reply_text("Не удалось загрузить файл с Яндекс.Диска.", reply_markup=default_reply_markup)
                     logger.error(f"Ошибка загрузки файла {file_path}: код {file_response.status_code}")
@@ -782,6 +800,9 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             if delete_yandex_disk_file(file_path):
                 await query.message.reply_text(f"Файл '{file_name}' удалён из папки {region_folder}.", reply_markup=default_reply_markup)
                 logger.info(f"Администратор {user_id} удалил файл {file_name}.")
+                # Обновляем список файлов после удаления
+                context.user_data['file_list'] = None
+                await show_file_list(update, context, for_deletion=True)
             else:
                 await query.message.reply_text(f"Ошибка при удалении файла '{file_name}'.", reply_markup=default_reply_markup)
                 logger.error(f"Ошибка при удалении файла {file_name} для пользователя {user_id}.")
@@ -799,11 +820,12 @@ async def show_main_menu_with_query(query: Update.callback_query, context: Conte
     ]
     reply_markup = ReplyKeyboardMarkup(admin_keyboard, resize_keyboard=True)
     context.user_data['default_reply_markup'] = reply_markup
-    context.user_data.pop('current_mode', None)
-    context.user_data.pop('current_dir', None)
-    context.user_data.pop('file_list', None)
-    context.user_data.pop('current_path', None)
+    context.user_data['current_mode'] = None
+    context.user_data['current_path'] = None
+    context.user_data['file_list'] = None
+    context.user_data['return_path'] = None
     await query.message.reply_text("Выберите действие:", reply_markup=reply_markup)
+    logger.info(f"Пользователь {user_id} вернулся в главное меню через callback.")
 
 # Обработка текстовых сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -921,14 +943,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if user_input == "Документы для РО":
         context.user_data['current_mode'] = 'documents_nav'
         context.user_data['current_path'] = '/documents/'
-        context.user_data.pop('file_list', None)  # Очищаем старый список файлов
+        context.user_data['file_list'] = None
+        context.user_data['return_path'] = None
         await show_current_docs(update, context)
         return
 
     if user_input == "Архив документов РО":
-        context.user_data.pop('current_mode', None)
-        context.user_data.pop('current_path', None)
-        context.user_data.pop('file_list', None)
+        context.user_data['current_mode'] = None
+        context.user_data['current_path'] = None
+        context.user_data['file_list'] = None
+        context.user_data['return_path'] = None
         await show_file_list(update, context)
         return
 
@@ -945,9 +969,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             ['Назад']
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        context.user_data.pop('current_mode', None)
-        context.user_data.pop('current_path', None)
-        context.user_data.pop('file_list', None)
+        context.user_data['current_mode'] = None
+        context.user_data['current_path'] = None
+        context.user_data['file_list'] = None
+        context.user_data['return_path'] = None
         await update.message.reply_text("Выберите действие:", reply_markup=reply_markup)
         logger.info(f"Администратор {user_id} запросил управление пользователями.")
         return
@@ -958,9 +983,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await update.message.reply_text("Ошибка: регион не определён. Обновите профиль с /start.",
                                            reply_markup=default_reply_markup)
             return
-        context.user_data.pop('current_mode', None)
-        context.user_data.pop('current_path', None)
-        context.user_data.pop('file_list', None)
+        context.user_data['current_mode'] = None
+        context.user_data['current_path'] = None
+        context.user_data['file_list'] = None
+        context.user_data['return_path'] = None
         await update.message.reply_text(
             "Отправьте файл для загрузки.",
             reply_markup=default_reply_markup
@@ -976,9 +1002,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.info(f"Пользователь {user_id} попытался удалить файл.")
             return
         context.user_data['awaiting_delete'] = True
-        context.user_data.pop('current_mode', None)
-        context.user_data.pop('current_path', None)
-        context.user_data.pop('file_list', None)
+        context.user_data['current_mode'] = None
+        context.user_data['current_path'] = None
+        context.user_data['file_list'] = None
+        context.user_data['return_path'] = None
         await show_file_list(update, context, for_deletion=True)
         return
 
@@ -993,7 +1020,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         dirs = list_yandex_disk_directories(current_path)
         if user_input in dirs:
             # Переход в подпапку
-            context.user_data.pop('file_list', None)  # Очищаем старый список файлов перед переходом
+            context.user_data['file_list'] = None  # Очищаем старый список файлов перед переходом
             context.user_data['current_path'] = f"{current_path}{user_input}/"
             logger.info(f"Пользователь {user_id} перешёл в папку: {context.user_data['current_path']}")
             await show_current_docs(update, context)
@@ -1004,7 +1031,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
         elif user_input == 'Назад' and current_path != '/documents/':
             # Возврат на уровень выше
-            context.user_data.pop('file_list', None)  # Очищаем старый список файлов
+            context.user_data['file_list'] = None  # Очищаем старый список файлов
             parts = current_path.rstrip('/').split('/')
             new_path = '/'.join(parts[:-1]) + '/' if len(parts) > 2 else '/documents/'
             context.user_data['current_path'] = new_path
