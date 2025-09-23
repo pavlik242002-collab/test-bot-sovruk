@@ -679,6 +679,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             return
         current_path = context.user_data.get('current_path', '/documents/')
         files = context.user_data.get('file_list', [])
+        logger.info(f"Попытка скачать файл, file_list: {[item['name'] for item in files]}, индекс: {file_idx}, путь: {current_path}")
         if not files or file_idx >= len(files):
             await query.message.reply_text("Ошибка: файл не найден.", reply_markup=default_reply_markup)
             logger.error(f"Файл с индексом {file_idx} не найден в file_list для user_id {user_id}")
@@ -703,6 +704,10 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                     document=InputFile(file_response.content, filename=file_name)
                 )
                 logger.info(f"Файл {file_name} из {current_path} отправлен пользователю {user_id}.")
+                # После скачивания возвращаемся на уровень выше
+                context.user_data['current_path'] = context.user_data.get('return_path', '/documents/')
+                context.user_data.pop('file_list', None)  # Очищаем file_list после скачивания
+                await show_current_docs(update, context, is_return=True)
             else:
                 await query.message.reply_text("Не удалось загрузить файл с Яндекс.Диска.", reply_markup=default_reply_markup)
                 logger.error(f"Ошибка загрузки файла {file_path}: код {file_response.status_code}")
