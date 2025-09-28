@@ -28,12 +28,12 @@ logger = logging.getLogger(__name__)
 load_dotenv()  # Пытаемся загрузить .env для локальной разработки, если файл существует
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 YANDEX_TOKEN = os.getenv("YANDEX_TOKEN")
-XAI_TOKEN = os.getenv("XAI_TOKEN")
+HF_TOKEN = os.getenv("HF_TOKEN")  # Изменено с XAI_TOKEN на HF_TOKEN
 
 # Отладка: выводим статус переменных
 logger.info(f"TELEGRAM_TOKEN: {'Set' if TELEGRAM_TOKEN else 'Not set'}")
 logger.info(f"YANDEX_TOKEN: {'Set' if YANDEX_TOKEN else 'Not set'}")
-logger.info(f"XAI_TOKEN: {'Set' if XAI_TOKEN else 'Not set'}")
+logger.info(f"HF_TOKEN: {'Set' if HF_TOKEN else 'Not set'}")
 
 # Проверка токенов
 missing_tokens = []
@@ -41,17 +41,17 @@ if not TELEGRAM_TOKEN:
     missing_tokens.append("TELEGRAM_TOKEN")
 if not YANDEX_TOKEN:
     missing_tokens.append("YANDEX_TOKEN")
-if not XAI_TOKEN:
-    missing_tokens.append("XAI_TOKEN")
+if not HF_TOKEN:
+    missing_tokens.append("HF_TOKEN")
 
 if missing_tokens:
     logger.error(f"Отсутствуют переменные окружения: {', '.join(missing_tokens)}")
     raise ValueError(f"Необходимо задать следующие переменные окружения: {', '.join(missing_tokens)}")
 
-# Инициализация клиента OpenAI
+# Инициализация клиента OpenAI для Hugging Face
 client = OpenAI(
-    base_url="https://api.x.ai/v1",
-    api_key=XAI_TOKEN,
+    base_url="https://api-inference.huggingface.co/models/microsoft/DialoGPT-medium",  # Пример HF модели для чата; измените на нужную
+    api_key=HF_TOKEN,
 )
 
 # Словарь федеральных округов
@@ -250,10 +250,16 @@ def create_yandex_folder(folder_path: str) -> bool:
         if response.status_code == 200:
             logger.info(f"Папка {folder_path} уже существует.")
             return True
+        if response.status_code == 401:
+            logger.error(f"401 Unauthorized для папки {folder_path}. Проверьте YANDEX_TOKEN (возможно, истёк или неверный).")
+            return False
         response = requests.put(url, headers=headers)
         if response.status_code in (201, 409):
             logger.info(f"Папка {folder_path} создана.")
             return True
+        if response.status_code == 401:
+            logger.error(f"401 Unauthorized при создании {folder_path}. Проверьте YANDEX_TOKEN.")
+            return False
         logger.error(f"Ошибка создания папки {folder_path}: код {response.status_code}, ответ: {response.text}")
         return False
     except Exception as e:
@@ -272,6 +278,9 @@ def list_yandex_disk_items(folder_path: str, item_type: str = None) -> List[Dict
             if item_type:
                 return [item for item in items if item['type'] == item_type]
             return items
+        if response.status_code == 401:
+            logger.error(f"401 Unauthorized для списка элементов в {folder_path}. Проверьте YANDEX_TOKEN.")
+            return []
         logger.error(f"Ошибка Яндекс.Диска: код {response.status_code}, ответ: {response.text}")
         return []
     except Exception as e:
@@ -302,6 +311,9 @@ def get_yandex_disk_file(file_path: str) -> str | None:
         response = requests.get(url, headers=headers)
         if response.status_code == 200:
             return response.json().get('href')
+        if response.status_code == 401:
+            logger.error(f"401 Unauthorized для файла {file_path}. Проверьте YANDEX_TOKEN.")
+            return None
         logger.error(f"Ошибка Яндекс.Диска для файла {file_path}: код {response.status_code}, ответ: {response.text}")
         return None
     except Exception as e:
@@ -324,10 +336,16 @@ def upload_to_yandex_disk(file_content: bytes, file_name: str, folder_path: str)
                 if upload_response.status_code in (201, 202):
                     logger.info(f"Файл {file_name} загружен в {folder_path}")
                     return True
+                if upload_response.status_code == 401:
+                    logger.error(f"401 Unauthorized при загрузке {file_path}. Проверьте YANDEX_TOKEN.")
+                    return False
                 logger.error(
                     f"Ошибка загрузки файла {file_path}: код {upload_response.status_code}, ответ: {upload_response.text}")
                 return False
             logger.error(f"Не получен URL для загрузки файла {file_path}")
+            return False
+        if response.status_code == 401:
+            logger.error(f"401 Unauthorized при получении URL для {file_path}. Проверьте YANDEX_TOKEN.")
             return False
         logger.error(
             f"Ошибка получения URL для загрузки {file_path}: код {response.status_code}, ответ: {response.text}")
@@ -347,6 +365,9 @@ def delete_yandex_disk_file(file_path: str) -> bool:
         if response.status_code in (204, 202):
             logger.info(f"Файл {file_path} удалён.")
             return True
+        if response.status_code == 401:
+            logger.error(f"401 Unauthorized при удалении {file_path}. Проверьте YANDEX_TOKEN.")
+            return False
         logger.error(f"Ошибка удаления файла {file_path}: код {response.status_code}, ответ: {response.text}")
         return False
     except Exception as e:
@@ -459,7 +480,7 @@ async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if profile.get("name") is None:
         context.user_data["awaiting_name"] = True
         await update.message.reply_text("Как я могу к Вам обращаться (кратко для удобства)?",
-                                       reply_markup=ReplyKeyboardRemove())
+                                        reply_markup=ReplyKeyboardRemove())
     else:
         await show_main_menu(update, context)
 
@@ -521,7 +542,7 @@ async def search_and_send_file(update: Update, context: ContextTypes.DEFAULT_TYP
 
     region_folder = f"/regions/{profile['region']}/"
     if not create_yandex_folder(region_folder):
-        await update.message.reply_text("Ошибка: не удалось проверить или создать папку региона.")
+        await update.message.reply_text("Ошибка: не удалось проверить или создать папку региона (проверьте токен Яндекс.Диска).")
         logger.error(f"Не удалось создать папку {region_folder} для пользователя {user_id}.")
         return
 
@@ -541,7 +562,7 @@ async def search_and_send_file(update: Update, context: ContextTypes.DEFAULT_TYP
     file_path = matching_file['path']
     download_url = get_yandex_disk_file(file_path)
     if not download_url:
-        await update.message.reply_text("Ошибка: не удалось получить ссылку для скачивания.")
+        await update.message.reply_text("Ошибка: не удалось получить ссылку для скачивания (проверьте токен Яндекс.Диска).")
         logger.error(f"Не удалось получить ссылку для файла {file_path}.")
         return
 
@@ -590,7 +611,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     region_folder = f"/regions/{profile['region']}/"
     if not create_yandex_folder(region_folder):
-        await update.message.reply_text("Ошибка: не удалось создать папку региона.")
+        await update.message.reply_text("Ошибка: не удалось создать папку региона (проверьте токен Яндекс.Диска).")
         logger.error(f"Не удалось создать папку {region_folder} для пользователя {user_id}.")
         return
 
@@ -600,7 +621,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if upload_to_yandex_disk(file_content, file_name, region_folder):
             await update.message.reply_text(f"Файл успешно загружен в папку {region_folder}")
         else:
-            await update.message.reply_text("Ошибка при загрузке файла на Яндекс.Диск.")
+            await update.message.reply_text("Ошибка при загрузке файла на Яндекс.Диск (проверьте токен).")
     except Exception as e:
         await update.message.reply_text(f"Ошибка при обработке файла: {str(e)}")
         logger.error(f"Ошибка обработки документа от {user_id}: {str(e)}")
@@ -615,22 +636,24 @@ async def show_file_list(update: Update, context: ContextTypes.DEFAULT_TYPE, for
     profile = USER_PROFILES.get(user_id)
     if not profile or "region" not in profile:
         await update.message.reply_text("Ошибка: регион не определён. Обновите профиль с /start.",
-                                       reply_markup=context.user_data.get('default_reply_markup',
-                                                                         ReplyKeyboardRemove()))
+                                        reply_markup=context.user_data.get('default_reply_markup',
+                                                                          ReplyKeyboardRemove()))
         logger.error(f"Ошибка: регион не определён для пользователя {user_id}.")
         return
 
     region_folder = f"/regions/{profile['region']}/"
     if not create_yandex_folder(region_folder):
-        await update.message.reply_text("Ошибка: не удалось создать папку региона.")
+        await update.message.reply_text("Ошибка: не удалось создать/проверить папку региона (проверьте токен Яндекс.Диска).",
+                                        reply_markup=context.user_data.get('default_reply_markup',
+                                                                          ReplyKeyboardRemove()))
         logger.error(f"Не удалось создать папку {region_folder} для пользователя {user_id}.")
         return
 
     files = list_yandex_disk_files(region_folder)
     if not files:
         await update.message.reply_text(f"В папке {region_folder} нет файлов.",
-                                       reply_markup=context.user_data.get('default_reply_markup',
-                                                                         ReplyKeyboardRemove()))
+                                        reply_markup=context.user_data.get('default_reply_markup',
+                                                                          ReplyKeyboardRemove()))
         logger.info(f"Папка {region_folder} пуста для пользователя {user_id}.")
         return
 
@@ -653,9 +676,9 @@ async def show_current_docs(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     current_path = context.user_data.get('current_path', '/documents/')
     folder_name = current_path.rstrip('/').split('/')[-1] or "Документы"
     if not create_yandex_folder(current_path):
-        await update.message.reply_text(f"Ошибка: не удалось создать папку {current_path}.",
-                                       reply_markup=context.user_data.get('default_reply_markup',
-                                                                         ReplyKeyboardRemove()))
+        await update.message.reply_text(f"Ошибка: не удалось создать папку {current_path} (проверьте токен Яндекс.Диска).",
+                                        reply_markup=context.user_data.get('default_reply_markup',
+                                                                          ReplyKeyboardRemove()))
         logger.error(f"Не удалось создать папку {current_path} для пользователя {user_id}.")
         return
 
@@ -706,13 +729,13 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     if not profile or "region" not in profile:
         await query.message.reply_text("Ошибка: регион не определён. Перезапустите /start.",
-                                      reply_markup=default_reply_markup)
+                                       reply_markup=default_reply_markup)
         logger.error(f"Ошибка: регион не определён для пользователя {user_id}.")
         return
 
     region_folder = f"/regions/{profile['region']}/"
     if not create_yandex_folder(region_folder):
-        await query.message.reply_text("Ошибка: не удалось создать папку региона.", reply_markup=default_reply_markup)
+        await query.message.reply_text("Ошибка: не удалось создать папку региона (проверьте токен Яндекс.Диска).", reply_markup=default_reply_markup)
         logger.error(f"Не удалось создать папку {region_folder} для пользователя {user_id}.")
         return
 
@@ -736,7 +759,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             logger.info(f"Перезагружен file_list для {current_path}: {[item['name'] for item in files]}")
         if not files or file_idx >= len(files):
             await query.message.reply_text("Ошибка: файл не найден. Попробуйте обновить список.",
-                                          reply_markup=default_reply_markup)
+                                           reply_markup=default_reply_markup)
             logger.error(
                 f"Файл с индексом {file_idx} не найден в file_list для user_id {user_id}, file_list: {[item['name'] for item in files]}")
             return
@@ -744,8 +767,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         file_path = f"{current_path.rstrip('/')}/{file_name}"
         download_url = get_yandex_disk_file(file_path)
         if not download_url:
-            await query.message.reply_text("Ошибка: не удалось получить ссылку для скачивания.",
-                                          reply_markup=default_reply_markup)
+            await query.message.reply_text("Ошибка: не удалось получить ссылку для скачивания (проверьте токен).",
+                                           reply_markup=default_reply_markup)
             logger.error(f"Не удалось получить ссылку для файла {file_path}.")
             return
 
@@ -763,7 +786,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 logger.info(f"Файл {file_name} из {current_path} отправлен пользователю {user_id}.")
             else:
                 await query.message.reply_text("Не удалось загрузить файл с Яндекс.Диска.",
-                                              reply_markup=default_reply_markup)
+                                               reply_markup=default_reply_markup)
                 logger.error(
                     f"Ошибка загрузки файла {file_path}: код {file_response.status_code}, ответ: {file_response.text}")
         except Exception as e:
@@ -787,7 +810,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             logger.info(f"Перезагружен file_list для {region_folder}: {[item['name'] for item in files]}")
         if not files or file_idx >= len(files):
             await query.message.reply_text("Ошибка: файл не найден. Попробуйте обновить список.",
-                                          reply_markup=default_reply_markup)
+                                           reply_markup=default_reply_markup)
             logger.error(
                 f"Файл с индексом {file_idx} не найден в file_list для user_id {user_id}, file_list: {[item['name'] for item in files]}")
             return
@@ -798,14 +821,14 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         if action == "download":
             if not file_name.lower().endswith(('.pdf', '.doc', '.docx', '.xls', '.xlsx', '.cdr', '.eps', '.png', '.jpg', '.jpeg')):
                 await query.message.reply_text("Поддерживаются только файлы .pdf, .doc, .docx, .xls, .xlsx, .cdr, .eps, .png, .jpg, .jpeg.",
-                                              reply_markup=default_reply_markup)
+                                               reply_markup=default_reply_markup)
                 logger.error(f"Неподдерживаемый формат файла {file_name} для пользователя {user_id}.")
                 return
 
             download_url = get_yandex_disk_file(file_path)
             if not download_url:
-                await query.message.reply_text("Ошибка: не удалось получить ссылку для скачивания.",
-                                              reply_markup=default_reply_markup)
+                await query.message.reply_text("Ошибка: не удалось получить ссылку для скачивания (проверьте токен).",
+                                               reply_markup=default_reply_markup)
                 logger.error(f"Не удалось получить ссылку для файла {file_path}.")
                 return
 
@@ -815,7 +838,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                     file_size = len(file_response.content) / (1024 * 1024)
                     if file_size > 20:
                         await query.message.reply_text("Файл слишком большой (>20 МБ).",
-                                                      reply_markup=default_reply_markup)
+                                                       reply_markup=default_reply_markup)
                         logger.error(f"Файл {file_name} слишком большой: {file_size} МБ")
                         return
                     await query.message.reply_document(
@@ -824,28 +847,28 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                     logger.info(f"Файл {file_name} отправлен пользователю {user_id}.")
                 else:
                     await query.message.reply_text("Не удалось загрузить файл с Яндекс.Диска.",
-                                                  reply_markup=default_reply_markup)
+                                                   reply_markup=default_reply_markup)
                     logger.error(
                         f"Ошибка загрузки файла {file_path}: код {file_response.status_code}, ответ: {file_response.text}")
             except Exception as e:
                 await query.message.reply_text(f"Ошибка при отправке файла: {str(e)}",
-                                              reply_markup=default_reply_markup)
+                                               reply_markup=default_reply_markup)
                 logger.error(f"Ошибка при отправке файла {file_path}: {str(e)}")
 
         elif action == "delete":
             if user_id not in ALLOWED_ADMINS:
                 await query.message.reply_text("Только администраторы могут удалять файлы.",
-                                              reply_markup=default_reply_markup)
+                                               reply_markup=default_reply_markup)
                 logger.info(f"Пользователь {user_id} попытался удалить файл.")
                 return
 
             if delete_yandex_disk_file(file_path):
                 await query.message.reply_text(f"Файл '{file_name}' удалён из папки {region_folder}.",
-                                              reply_markup=default_reply_markup)
+                                               reply_markup=default_reply_markup)
                 logger.info(f"Администратор {user_id} удалил файл {file_name}.")
             else:
-                await query.message.reply_text(f"Ошибка при удалении файла '{file_name}'.",
-                                              reply_markup=default_reply_markup)
+                await query.message.reply_text(f"Ошибка при удалении файла '{file_name}' (проверьте токен).",
+                                               reply_markup=default_reply_markup)
                 logger.error(f"Ошибка при удалении файла {file_name} для пользователя {user_id}.")
 
             context.user_data.pop('file_list', None)
@@ -929,9 +952,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
         else:
             await update.message.reply_text("Пожалуйста, выберите из предложенных округов.",
-                                           reply_markup=ReplyKeyboardMarkup(
-                                               [[district] for district in FEDERAL_DISTRICTS.keys()],
-                                               resize_keyboard=True))
+                                            reply_markup=ReplyKeyboardMarkup(
+                                                [[district] for district in FEDERAL_DISTRICTS.keys()],
+                                                resize_keyboard=True))
             return
 
     if context.user_data.get("awaiting_region", False):
@@ -948,20 +971,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 return
             region_folder = f"/regions/{user_input}/"
             if not create_yandex_folder(region_folder):
-                await update.message.reply_text("Ошибка: не удалось создать папку региона.")
+                await update.message.reply_text("Ошибка: не удалось создать папку региона (проверьте токен Яндекс.Диска).")
                 logger.error(f"Не удалось создать папку {region_folder} для пользователя {user_id}.")
                 return
             context.user_data.pop("awaiting_region", None)
             context.user_data.pop("selected_federal_district", None)
             context.user_data["awaiting_name"] = True
             await update.message.reply_text("Как я могу к Вам обращаться (кратко для удобства)?",
-                                           reply_markup=ReplyKeyboardRemove())
+                                            reply_markup=ReplyKeyboardRemove())
             logger.info(f"Пользователь {user_id} зарегистрирован с регионом {user_input}.")
             return
         else:
             await update.message.reply_text("Пожалуйста, выберите из предложенных регионов.",
-                                           reply_markup=ReplyKeyboardMarkup([[region] for region in regions],
-                                                                            resize_keyboard=True))
+                                            reply_markup=ReplyKeyboardMarkup([[region] for region in regions],
+                                                                             resize_keyboard=True))
             return
 
     if context.user_data.get("awaiting_name", False):
@@ -991,7 +1014,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context.user_data['current_path'] = '/documents/'
         context.user_data.pop('file_list', None)
         if not create_yandex_folder('/documents/'):
-            await update.message.reply_text("Ошибка: не удалось создать папку /documents/.")
+            await update.message.reply_text("Ошибка: не удалось создать папку /documents/ (проверьте токен).")
             logger.error(f"Не удалось создать папку /documents/ для пользователя {user_id}.")
             return
         await show_current_docs(update, context)
@@ -1007,7 +1030,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if user_input == "Управление пользователями":
         if user_id not in ALLOWED_ADMINS:
             await update.message.reply_text("Только администраторы могут управлять пользователями.",
-                                           reply_markup=default_reply_markup)
+                                            reply_markup=default_reply_markup)
             logger.info(f"Пользователь {user_id} попытался использовать управление пользователями.")
             return
         keyboard = [
@@ -1028,7 +1051,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         profile = USER_PROFILES.get(user_id)
         if not profile or "region" not in profile:
             await update.message.reply_text("Ошибка: регион не определён. Обновите профиль с /start.",
-                                           reply_markup=default_reply_markup)
+                                            reply_markup=default_reply_markup)
             return
         context.user_data.pop('current_mode', None)
         context.user_data.pop('current_path', None)
@@ -1044,7 +1067,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if user_input == "Удалить файл":
         if user_id not in ALLOWED_ADMINS:
             await update.message.reply_text("Только администраторы могут удалять файлы.",
-                                           reply_markup=default_reply_markup)
+                                            reply_markup=default_reply_markup)
             logger.info(f"Пользователь {user_id} попытался удалить файл.")
             return
         context.user_data['awaiting_delete'] = True
@@ -1068,7 +1091,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.info(f"Пользователь {user_id} перешёл в папку: {context.user_data['current_path']}")
             if not create_yandex_folder(context.user_data['current_path']):
                 await update.message.reply_text(
-                    f"Ошибка: не удалось создать папку {context.user_data['current_path']}.",
+                    f"Ошибка: не удалось создать папку {context.user_data['current_path']} (проверьте токен).",
                     reply_markup=default_reply_markup)
                 logger.error(
                     f"Не удалось создать папку {context.user_data['current_path']} для пользователя {user_id}.")
@@ -1094,22 +1117,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if context.user_data['awaiting_user_id'] == 'add_user':
                 if new_id in ALLOWED_USERS:
                     await update.message.reply_text(f"Пользователь с ID {new_id} уже имеет доступ.",
-                                                   reply_markup=default_reply_markup)
+                                                    reply_markup=default_reply_markup)
                     return
                 ALLOWED_USERS.append(new_id)
                 save_allowed_users(ALLOWED_USERS)
                 await update.message.reply_text(f"Пользователь с ID {new_id} добавлен!",
-                                               reply_markup=default_reply_markup)
+                                                reply_markup=default_reply_markup)
                 logger.info(f"Администратор {user_id} добавил пользователя {new_id}.")
             elif context.user_data['awaiting_user_id'] == 'add_admin':
                 if new_id in ALLOWED_ADMINS:
                     await update.message.reply_text(f"Пользователь с ID {new_id} уже администратор.",
-                                                   reply_markup=default_reply_markup)
+                                                    reply_markup=default_reply_markup)
                     return
                 ALLOWED_ADMINS.append(new_id)
                 save_allowed_admins(ALLOWED_ADMINS)
                 await update.message.reply_text(f"Пользователь с ID {new_id} назначен администратором!",
-                                               reply_markup=default_reply_markup)
+                                                reply_markup=default_reply_markup)
                 logger.info(f"Администратор {user_id} назначил администратора {new_id}.")
             context.user_data.pop('awaiting_user_id', None)
             handled = True
@@ -1121,11 +1144,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if user_input == "Добавить пользователя":
         if user_id not in ALLOWED_ADMINS:
             await update.message.reply_text("Только администраторы могут добавлять пользователей.",
-                                           reply_markup=default_reply_markup)
+                                            reply_markup=default_reply_markup)
             logger.info(f"Пользователь {user_id} попытался добавить пользователя.")
             return
         await update.message.reply_text("Укажите user_id для добавления.",
-                                       reply_markup=default_reply_markup)
+                                        reply_markup=default_reply_markup)
         context.user_data['awaiting_user_id'] = 'add_user'
         logger.info(f"Администратор {user_id} запросил добавление пользователя.")
         handled = True
@@ -1133,11 +1156,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if user_input == "Добавить администратора":
         if user_id not in ALLOWED_ADMINS:
             await update.message.reply_text("Только администраторы могут назначать администраторов.",
-                                           reply_markup=default_reply_markup)
+                                            reply_markup=default_reply_markup)
             logger.info(f"Пользователь {user_id} попытался добавить администратора.")
             return
         await update.message.reply_text("Укажите user_id для назначения администратором.",
-                                       reply_markup=default_reply_markup)
+                                        reply_markup=default_reply_markup)
         context.user_data['awaiting_user_id'] = 'add_admin'
         logger.info(f"Администратор {user_id} запросил добавление администратора.")
         handled = True
@@ -1145,7 +1168,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if user_input == "Список пользователей":
         if user_id not in ALLOWED_ADMINS:
             await update.message.reply_text("Только администраторы могут просматривать список пользователей.",
-                                           reply_markup=default_reply_markup)
+                                            reply_markup=default_reply_markup)
             logger.info(f"Пользователь {user_id} попытался просмотреть список пользователей.")
             return
         if not ALLOWED_USERS:
@@ -1159,7 +1182,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if user_input == "Список администраторов":
         if user_id not in ALLOWED_ADMINS:
             await update.message.reply_text("Только администраторы могут просматривать список администраторов.",
-                                           reply_markup=default_reply_markup)
+                                            reply_markup=default_reply_markup)
             logger.info(f"Пользователь {user_id} попытался просмотреть список администраторов.")
             return
         if not ALLOWED_ADMINS:
@@ -1208,11 +1231,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         messages = histories[chat_id]["messages"]
 
-        models_to_try = ["grok-3-mini", "grok-beta"]
-        response_text = "Извините, не удалось получить ответ от API. Проверьте подписку на SuperGrok или X Premium+."
+        # Модели для HF (OpenAI-совместимые)
+        models_to_try = ["microsoft/DialoGPT-medium", "gpt2"]  # Примеры HF моделей; измените на нужные
+        response_text = "Извините, не удалось получить ответ от HF API. Проверьте HF_TOKEN и модель."
 
         for model in models_to_try:
             try:
+                # Для HF используем conversations API, но адаптируем под OpenAI
                 completion = client.chat.completions.create(
                     model=model,
                     messages=messages,
@@ -1224,11 +1249,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 break
             except openai.AuthenticationError as auth_err:
                 logger.error(f"Ошибка авторизации для {model}: {str(auth_err)}")
-                response_text = "Ошибка авторизации: неверный API-ключ. Проверьте XAI_TOKEN."
+                response_text = "Ошибка авторизации: неверный HF_TOKEN."
                 break
             except openai.APIError as api_err:
-                if "403" in str(api_err):
-                    logger.warning(f"403 Forbidden для {model}. Пробуем следующую модель.")
+                if "401" in str(api_err):
+                    logger.warning(f"401 Unauthorized для {model}. Пробуем следующую модель.")
                     continue
                 logger.error(f"Ошибка API для {model}: {str(api_err)}")
                 response_text = f"Ошибка API: {str(api_err)}"
@@ -1242,8 +1267,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 response_text = f"Неизвестная ошибка: {str(e)}"
                 break
         else:
-            logger.error("Все модели недоступны (403). Проверьте токен и подписку.")
-            response_text = "Все модели недоступны (403). Обновите SuperGrok или X Premium+."
+            logger.error("Все модели недоступны. Проверьте HF_TOKEN.")
+            response_text = "Все модели недоступны. Обновите HF_TOKEN."
 
         user_name = USER_PROFILES.get(user_id, {}).get("name", "Друг")
         final_response = f"{user_name}, {response_text}"
@@ -1261,10 +1286,11 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 def main() -> None:
     """Запуск бота."""
     logger.info("Запуск Telegram бота...")
+    # Создание корневых папок с обработкой ошибок
     if not create_yandex_folder('/regions/'):
-        logger.error("Не удалось создать папку /regions/")
+        logger.error("Не удалось создать папку /regions/ (проверьте YANDEX_TOKEN). Бот запустится, но функции Диска не будут работать.")
     if not create_yandex_folder('/documents/'):
-        logger.error("Не удалось создать папку /documents/")
+        logger.error("Не удалось создать папку /documents/ (проверьте YANDEX_TOKEN). Бот запустится, но функции Диска не будут работать.")
     try:
         app = Application.builder().token(TELEGRAM_TOKEN).build()
         app.add_handler(CommandHandler("start", send_welcome))
