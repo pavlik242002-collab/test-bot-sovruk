@@ -1,6 +1,6 @@
 .venv/
 .env
 bot.log
-search_cache.json
+search_cache1.json
 __pycache__/
 *.pyc

@@ -217,6 +217,6 @@ def main() -> None:
         app.run_polling()
     except Exception as e:
         logger.error(f"Ошибка при запуске бота: {str(e)}")
-
+#jfj
 if __name__ == "__main__":
     main()
